@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.ac.iie.mapper.DNSListMapper">
+    <resultMap id="dnsList" type="cn.ac.iie.pojo.DNSlog"/>
+    <select id="getRelationList" parameterType="int" resultMap="dnsList">
+        select
+            s_ip, s_port, found_time, recv_time, d_ip, d_port, url
+        from
+            `ntc_collect_dns_log_local`
+        where <![CDATA[ found_time <= (#{found_time} + 5000) ]]>  and found_time &gt;= (#{found_time} - 5000)
+    </select>
+</mapper>

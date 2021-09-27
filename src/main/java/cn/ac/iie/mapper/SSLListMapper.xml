@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.ac.iie.mapper.SSLListMapper">
+    <select id="getRelationList" resultType="cn.ac.iie.pojo.SSLlog">
+        select
+            s_ip, s_port, create_time, last_time, d_ip, d_port, sni, server_cert
+        from
+            `ntc_collect_ssl_log_local`
+        where <![CDATA[ create_time <= (#{create_time} + #{intervalTime}) ]]> and create_time &gt;= (#{create_time} - #{intervalTime})
+    </select>
+    <select id="getRelationListByCip" resultType="cn.ac.iie.pojo.SSLlog">
+        select
+            s_ip, s_port, create_time, last_time, d_ip, d_port, sni, server_cert
+        from
+            `ntc_collect_ssl_log_local`
+        where <![CDATA[ create_time <= (#{create_time} + #{intervalTime}) ]]>
+            and create_time &gt;= (#{create_time} - #{intervalTime})
+            and s_ip=#{s_ip}
+    </select>
+</mapper>

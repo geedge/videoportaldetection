@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.ac.iie.mapper.AVDataListMapper">
+    <select id="getRelationList" resultType="cn.ac.iie.pojo.TrafficLog">
+        select common_client_ip, common_client_port, common_server_ip, common_server_port, common_recv_time,
+               common_start_time, http_url, http_host, http_domain, ssl_sni, ssl_cn
+        from `connection_record_log_local`
+        where common_start_time &gt;= (#{found_time} - #{intervalTime}) and common_start_time &lt;= (#{found_time} + #{intervalTime})
+    </select>
+
+    <select id="getAVList" resultType="cn.ac.iie.pojo.AVlog">
+        select client_ip, server_ip, url, referer, recv_time, found_time, expire_time
+        from `av_event_log_local`
+    </select>
+
+    <select id="getRelationListWithHost" resultType="cn.ac.iie.pojo.TrafficLog">
+        select common_client_ip, common_client_port, common_server_ip, common_server_port, common_recv_time,
+               common_start_time, http_url, http_host, http_domain, ssl_sni, ssl_cn
+        from `connection_record_log_local`
+        where common_start_time &gt;= (#{found_time} - #{intervalTime})
+            and common_start_time &lt;= (#{found_time} + #{intervalTime})
+            and common_client_ip = #{client_ip}
+    </select>
+
+    <select id="getAVListWithReferer" resultType="cn.ac.iie.pojo.AVlog">
+        select client_ip, server_ip, url, referer, recv_time, found_time, expire_time
+        from `av_event_log_local`
+        where length(referer) > 0
+    </select>
+
+    <select id="getReferPortal" resultType="cn.ac.iie.pojo.TrafficLog">
+        select common_client_ip, common_client_port, common_server_ip, common_server_port, common_recv_time,
+               common_start_time, http_url, http_host, http_domain, ssl_sni, ssl_cn
+        from `connection_record_log_local`
+        where common_start_time &gt;= (#{found_time} - 30)
+            and common_start_time &lt;= (#{found_time} + 10)
+            and common_client_ip = #{client_ip}
+            and (http_host = #{host} or ssl_sni = #{host})
+    </select>
+
+    <select id="statisticsUA" resultType="cn.ac.iie.pojo.AVlog">
+        select client_ip, server_ip, url, referer, user_agent, md5
+        from db_test.av_event_log_local
+        where LENGTH(user_agent)>1
+    </select>
+
+    <select id="cumulativeData" resultType="Integer">
+        select count(url) from `av_event_log_local`
+        where url like #{urlPath} and recv_time &gt;= #{effectiveTime}
+    </select>
+</mapper>

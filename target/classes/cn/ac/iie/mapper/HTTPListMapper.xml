@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="cn.ac.iie.mapper.HTTPListMapper">
+    <select id="getRelationList" resultType="cn.ac.iie.pojo.HTTPlog">
+        select
+            s_ip, s_port, found_time, recv_time, d_ip, d_port, url
+        from
+            `ntc_collect_http_doc_log_local`
+        where <![CDATA[ found_time <= (#{found_time} + #{intervalTime}) ]]>  and found_time &gt;= (#{found_time} - #{intervalTime})
+    </select>
+    <!--这里+5000是因为数据表中的类型是unix时间戳-->
+    <!--resultMap可以不写，当实体类名和表的列名一样的时候-->
+</mapper>
