@@ -50,4 +50,12 @@
         select count(url) from `av_event_log_local`
         where url like #{urlPath} and recv_time &gt;= #{effectiveTime}
     </select>
+
+    <select id="getHistoryHost" resultType="cn.ac.iie.pojo.AVlog">
+        select client_ip, server_ip, url, recv_time, found_time, expire_time
+        from `av_event_log_local`
+        where url like #{host}
+        order by recv_time desc
+        limit 100
+    </select>
 </mapper>

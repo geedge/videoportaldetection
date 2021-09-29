@@ -23,4 +23,6 @@ public interface AVDataListMapper {
     public List<AVlog> statisticsUA();
 
     public int cumulativeData(@Param("urlPath") String urlPath, @Param("effectiveTime") long effectiveTime);
+
+    public List<AVlog> getHistoryHost(@Param("host") String host);
 }
