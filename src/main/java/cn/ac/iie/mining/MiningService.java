@@ -15,14 +15,18 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.spark.SparkConf;
+import org.apache.spark.SparkContext;
 import org.apache.spark.ml.fpm.PrefixSpan;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.RowFactory;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.types.*;
-import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;
+import scala.collection.mutable.WrappedArray;
 
 import java.time.Duration;
 import java.util.*;
@@ -33,10 +37,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 代码逻辑：
  * 从kafka从读取数据，查看其host是否在redis中存在，如果存在则表示曾进行过序列挖掘，再检查这个hodt对应的记录是否失效，
  * 如果这个host在redis不存在或者已失效，则查ClickHouse看其历史数据是否大于10，如果大于则进行序列挖掘，并将结果写到redis中
+ *
+ * 当前问题：CK表的 AV_event 和 connection_record_log_local 中记录不一致，一个有的另一个可能没有，两个都有的时间可能对不上
  */
 public class MiningService {
     public static final String groupId="test";
     public static final AtomicBoolean isRunning=new AtomicBoolean(true);
+    private static Logger logger = LoggerFactory.getLogger(MiningService.class);
 
     private static Properties initConfig() {
         Properties properties=new Properties();
@@ -46,10 +53,11 @@ public class MiningService {
         properties.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
 
         // max.poll.records设置的条数要在一定的时间间隔处理完
-        properties.put("max.poll.records", 50);
+        properties.put("max.poll.records", 10);
         // 自动提交
         properties.put("enable.auto.commit", "false");
-        properties.put("auto.offset.reset", "earliest");
+        // 测试的时候设置为从头开始
+        //properties.put("auto.offset.reset", "earliest");
 
         return properties;
     }
@@ -58,22 +66,42 @@ public class MiningService {
     private static Jedis jedis;
     private static AVDataListMapper avListMapper;
 
+    private static SparkConf conf = new SparkConf()
+            .setAppName("PrefixSpanHosts"+System.currentTimeMillis())
+            .setMaster(Configurations.getStringProperty(0, "Spark.master"))
+            // 指定本机IP为driver
+            //.setIfMissing("spark.driver.host", "192.168.36.69")
+            //.setJars(new String[]{"out/artifacts/VideoPortalDetection_jar/VideoPortalDetection.jar"})
+            .set("spark.executor.extraJavaOptions", "-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=./dumpex")
+            .set("spark.driver.extraJavaOptions", "-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=./dumpdr")
+            .set("spark.driver.memory", "10g")
+            .set("spark.executor.memory", "2g")
+            ;
+
+    private static SparkSession spark = SparkSession
+            .builder()
+            //.appName("PrefixSpanHosts")
+            //.master("local[*]")
+            //.master("spark://hezhengjiedeMacBook-Pro.local:7077")
+            //.master(Configurations.getStringProperty(0, "Spark.master"))
+            // 这里还需要setJars
+            .config(conf)
+            .getOrCreate();
+
+    private static SparkContext sc = spark.sparkContext();
+
     static {
         sqlSession = SqlSessionFactoryUtils.getSqlSessionFactory().openSession();
         avListMapper = sqlSession.getMapper(AVDataListMapper.class);
+
         if (jedis == null) {
             JedisPoolUtils.getJedisPoolInstance();
             jedis = JedisPoolUtils.getJedis();
         }
+
+        sc.setLogLevel("WARN");
     }
 
-    private static SparkSession spark = SparkSession
-            .builder()
-            .appName("PrefixSpanHosts")
-            .master(Configurations.getStringProperty(0, "Spark.master"))
-            .getOrCreate();
-
-    @Test
     public void consumeKafka() {
         Properties properties=initConfig();
         KafkaConsumer<String,String> consumer=new KafkaConsumer<>(properties);
@@ -86,31 +114,63 @@ public class MiningService {
             String prevHost = "";
 
             // 拉取消息并消费
+            finalTag:
             while(isRunning.get()){
                 ConsumerRecords<String,String> records=consumer.poll(Duration.ofMillis(1000));
                 for (ConsumerRecord<String,String> record:records){
                     JsonNode jsonNode = objectMapper.readTree(record.value());
 
                     // 查找有数据的部分
-                    if (jsonNode.get("dir").asInt() == 2)
+                    JsonNode urlNode = jsonNode.get("url");
+                    if (jsonNode.get("dir").asInt() == 2 || urlNode == null)
                         continue;
-                    String urlPath = URLHandleUtils.getFirstURLPath(jsonNode.get("url").asText());
+                    String urlPath = URLHandleUtils.getFirstURLPath(urlNode.asText());
                     if (prevHost.equals(urlPath))
                         continue;
                     prevHost = urlPath;
 
                     // 交给查询模块进行处理
-                    System.out.println(urlPath);
+                    logger.warn(String.format("当前YSP为%s", urlPath));
+                    miningProcess(urlPath);
+                    //break finalTag;
                 }
-                consumer.commitSync();
+                //consumer.commitSync();
+                //break;
             }
         } catch (Exception e) {
             e.printStackTrace();
         }finally {
             consumer.close();
             sqlSession.close();
-            JedisPoolUtils.returnResource(jedis);
+            JedisPoolUtils.releaseResource(jedis);
         }
+    }
+
+    public void miningProcess(String urlHost) {
+        if (!judgeKeyCache(urlHost)) {
+            logger.warn("不需要进行序列挖掘");
+        }
+        ArrayList<Row> data = buildInput(urlHost);
+        logger.warn("数据构造完毕，开始序列挖掘");
+        // 调用spark模块
+        Dataset<Row> sequence = relateHostMiningTask(data);
+
+        logger.warn("mining结束，写回Redis");
+        // 写回redis，如果redis中存在过期记录则覆盖
+        List<String> candidateList = miningCandidate(sequence);
+
+        jedis.hset(urlHost, "write_time", String.valueOf(System.currentTimeMillis()/1000L));
+        Integer volume = Configurations.getIntProperty(0, "volume");
+        if (volume != null && volume > 0) {
+            String lastOptimize = candidateList.get(candidateList.size()-1);
+            List<String> lastOptimizeList = Arrays.asList(lastOptimize.substring(1, lastOptimize.length()-1).split(", "));
+            if (lastOptimizeList.size() > volume) {
+                String candidate = lastOptimizeList.subList(0 ,volume).toString();
+                jedis.hset(urlHost, "candidate", candidate);
+            }
+            else jedis.hset(urlHost, "candidate", candidateList.get(candidateList.size()-1));
+        }
+        else jedis.hset(urlHost, "candidate", candidateList.get(candidateList.size()-1));
     }
 
     /**
@@ -119,52 +179,65 @@ public class MiningService {
      * 注意这里如果在序列表中加了记录的过期删除的话需要修改代码哟～
      * @param urlPath 以 / 分割的一级地址
      */
-    public void judgeKey(String urlPath) {
+    public boolean judgeKeyCache(String urlPath) {
         if (jedis.exists(urlPath)) {
             // 存在的话再判断一下时间过期没有
             long writeTime = Long.parseLong(jedis.hget(urlPath, "write_time"));
             long nowTime = System.currentTimeMillis()/1000L;
-            long earlyMorning3 = nowTime - (nowTime + 8 * 3600) % 86400 - 86400 * 2;
-            if (earlyMorning3 > writeTime && isMore10(urlPath)) {
+            // long earlyMorning3 = nowTime - (nowTime + 8 * 3600) % 86400 - 86400 * 2;
+            long expireTime = nowTime - Configurations.getIntProperty(0, "ExpirationTime") * 24 * 60 * 60;
+            if (expireTime > writeTime || jedis.hget(urlPath, "candidate").length() <= 2) {
                 // 序列挖掘
-                sequenceMining(urlPath);
+                logger.warn(String.format("%s不存在且过去日志符合条件，进行序列挖掘", urlPath));
+                return true;
             }
+            else logger.warn(String.format("%s在Redis中存在并且尚未过期", urlPath));
         }
         else {
             // 序列挖掘
             if (isMore10(urlPath)) {
-                sequenceMining(urlPath);
+                logger.warn(String.format("%s不存在且过去日志符合条件，进行序列挖掘", urlPath));
+                return true;
+            }
+            else {
+                logger.error(String.format("%s在过去日志中出现次数过少", urlPath));
             }
         }
+        return false;
     }
 
     /**
-     * 查询ClickHouse看是否满足序列挖掘条件
+     * 查询ClickHouse看是否满足序列挖掘条件，单独抽出这个类的原因是避免用like去查询
      * @param urlPath 从 / 分割的一级地址
      * @return 是否可以进行序列挖掘
      */
     public boolean isMore10(String urlPath) {
         String likeUrl = '%' + urlPath + '%';
-        // 这个时间不是准确的30天前喔
-        long effectiveTime = System.currentTimeMillis()/1000L - 3000000;
+        // long effectiveTime = System.currentTimeMillis()/1000L - 3000000;
+        long effectiveTime = System.currentTimeMillis()/1000L -
+                Configurations.getIntProperty(0, "historyTrafficInterval") * 24 * 60 * 60;
         int cnt = avListMapper.cumulativeData(likeUrl, effectiveTime);
-        return cnt >= 10;
+        return cnt >= Configurations.getIntProperty(0, "leastHistoryNum");
     }
 
     /**
-     * 先查ck找到每一个相似的host的client ip和server ip，时间戳
-     * 每一个host找其时间窗口，构造一行RowFactory
+     * 先查ck的av表找到每一个相似的host的client ip和server ip，时间戳
+     * 通过av标的每一条记录查询总流量表找到时间窗口
+     * 每一个host找其时间窗口后，构造一行RowFactory
      * 将构造好的data交给Spark进行序列挖掘
      * 返回结果处理后写入redis
+     *
+     * TODO:异常处理，当aVlogs太少而trafficLogList太长的时候考虑不加入训练
      *
      * redis格式：
      * key: urlPath field: write_time, candidate 皆为字符型
      * candidate(String): [host1, host2, host3]
      */
-    public void sequenceMining(String urlPath) {
+    public ArrayList<Row> buildInput(String urlPath) {
         // 先查ck找到每一个相似的host
         String likeUrl = '%' + urlPath + '%';
         List<AVlog> aVlogs = avListMapper.getHistoryHost(likeUrl);
+        logger.warn(String.format("%s过去曾出现过%d次", urlPath, aVlogs.size()));
 
         ArrayList<Row> data = new ArrayList<>();
 
@@ -172,17 +245,13 @@ public class MiningService {
         for (AVlog eachLog: aVlogs) {
             List<TrafficLog> trafficLogList = avListMapper.getRelationListWithHost(eachLog.getFound_time(),
                     eachLog.getClient_ip(),
-                    Configurations.getIntProperty(0, "interval"));
-            data.add(RowFactory.create(constructRow(trafficLogList)));
+                    Configurations.getIntProperty(0, "intervalLeft"),
+                    Configurations.getIntProperty(0, "intervalRight"));
+            // System.out.println(trafficLogList.toString());
+            if (trafficLogList.size() > 0)
+                data.add(RowFactory.create(constructRow(trafficLogList)));
         }
-
-        // 调用spark模块
-        Dataset<Row> sequence = relateHostMiningTask(spark, data);
-
-        // 写回redis
-        List<String> candidateList = buildCandidate(sequence);
-        jedis.hset(urlPath, "write_time", String.valueOf(System.currentTimeMillis()/1000L));
-        long returnStatus = jedis.hset(urlPath, "candidate", candidateList.toString());
+        return data;
     }
 
     /**
@@ -191,7 +260,14 @@ public class MiningService {
     private List<List<String>> constructRow(List<TrafficLog> trafficLogList) {
         List<List<String>> row = new ArrayList<>();
         for (TrafficLog trafficLog: trafficLogList) {
-            row.add(Arrays.asList(trafficLog.getHttp_host()));
+            String oneItemHTTPHost = trafficLog.getHttp_host();
+            String oneItemSNI = trafficLog.getSsl_sni();
+            // logger.warn("HTTP: " + oneItemHTTPHost);
+            // logger.warn("SSL: " + oneItemSNI);
+            if (oneItemSNI != null && oneItemSNI.length() > 0)
+                row.add(Arrays.asList(oneItemSNI));
+            else if (oneItemHTTPHost != null && oneItemHTTPHost.length() > 0)
+                row.add(Arrays.asList(oneItemHTTPHost));
         }
         return row;
     }
@@ -199,18 +275,21 @@ public class MiningService {
     /**
      * 序列挖掘方法
      */
-    public Dataset<Row> relateHostMiningTask(SparkSession spark, List<Row> data) {
+    //public Dataset<Row> relateHostMiningTask(SparkSession spark, List<Row> data) {
+    public Dataset<Row> relateHostMiningTask(List<Row> data) {
         StructType schema = new StructType(new StructField[]{ new StructField(
                 "sequence", new ArrayType(new ArrayType(DataTypes.StringType, true), true),
                 false, Metadata.empty())
         });
         Dataset<Row> sequenceDF = spark.createDataFrame(data, schema);
-
-        PrefixSpan prefixSpan = new PrefixSpan().setMinSupport(0.5).setMaxPatternLength(5);
+        sequenceDF.show(20, true);
+        //sequenceDF.show(50, false);
+        PrefixSpan prefixSpan = new PrefixSpan().setMinSupport(Configurations.getDoubleProperty(0, "prefixConfidence")).setMaxPatternLength(5);
 
         // Finding frequent sequential patterns
         Dataset<Row> sequence = prefixSpan.findFrequentSequentialPatterns(sequenceDF);
-        sequence.show();
+        //sequence.show(10, false);
+        sequence.show(100,false);
         return sequence;
     }
 
@@ -218,15 +297,100 @@ public class MiningService {
      * 将spark序列挖掘返回的结果进行处理，返回候选集
      * 如果有需要重排序的也在这一步进行处理
      * 总感觉Spark用Iterator的处理很慢，不如lambda
+     *
+     * TODO:这里项集的域名的地址没有经过处理
+     * 这里有一定概率内存溢出，目前暂不清楚如何增加一个task的最大内存
      */
-    public List<String> buildCandidate(Dataset<Row> sequence) {
-        List<String> oneItemList = new ArrayList<>();
+    public List<String> miningCandidate(Dataset<Row> sequence) {
+        List<String> candidateList = new ArrayList<>();
+        HashMap<String, Integer> restFirstMap = new HashMap<>();
+        HashMap<String, Integer> restMap = new HashMap<>();
+
+        String candidateItem;
+        HashMap<String, Long> hashMap = new HashMap<>();
+        // TODO:这里会导致堆内存不足的问题 Uncaught exception in thread task-result-getter
         for(Iterator<Row> iter = sequence.toLocalIterator(); iter.hasNext();) {
             Row each = iter.next();
-            if (each.size() == 1)
-                oneItemList.add(each.getString(0));
+            if (each.size() == 2) {
+                try {
+                    WrappedArray rawSequence = (WrappedArray)each.get(0);
+                    WrappedArray firstItem = (WrappedArray)rawSequence.apply(0);
+                    //if (cmt >= volume) break;
+                    //cmt++;
+                    if (rawSequence.size() == 1) {
+                        candidateItem = (String)firstItem.apply(0);
+                        Long freq = (Long) each.get(1);
+                        if (hashMap.containsKey(candidateItem)) {
+                            if (hashMap.get(candidateItem) < freq)
+                                hashMap.put(candidateItem, freq);
+                        }
+                        else {
+                            candidateList.add(candidateItem);
+                            hashMap.put(candidateItem, freq);
+                        }
+                    }
+                    else {
+                        candidateItem =  (String)((WrappedArray)rawSequence.apply(0)).apply(0);
+                        restFirstMap.put(candidateItem, restFirstMap.getOrDefault(candidateItem, 0) + 1);
+                        for (int i = 1; i < rawSequence.size(); i++) {
+                            candidateItem = (String)((WrappedArray)rawSequence.apply(i)).apply(0);
+                            restMap.put(candidateItem, restMap.getOrDefault(candidateItem, 0) + 1);
+                        }
+                    }
+                }
+                catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
             else break;
         }
-        return oneItemList;
+        candidateList.sort((o1, o2) -> (int) (hashMap.get(o2) - hashMap.get(o1)));
+        List<String> optimizedOrders = new ArrayList<>();
+        // 根据freq排，但是感觉freq并不是统计的结果呀，就很奇怪
+        optimizedOrders.add(candidateList.toString());
+        logger.warn("计算结果：" + candidateList.toString());
+
+        prefixReSort(optimizedOrders, candidateList, restFirstMap, restMap);
+        logger.warn("优化后的结果：" + optimizedOrders.get(optimizedOrders.size()-1));
+        return optimizedOrders;
+    }
+
+    /**
+     * 直接用一项集的话，结果和统计是没差的，其实入口更倾向于出现在多项集的首部，而不是一项集
+     * 规则1：入口更倾向于出现在多项集的首部 -> 统计candidate出现在多项集首部的次数
+     * 规则2：入口更不倾向于出现在无序集中 -> 统计candidate出现在不是首部的比例（这一点目前来看不一定是好的，因为很多大站很可能就在后面会出现呀～）
+     * TODO: 这里排序的实现需要改进，用排序序列的方法直接忽略了数值的关系，损失了部分特征，后续可以考虑用learning to rank的方法
+     *
+     * @param candidateList 一项集
+     * @param restMap 多项集
+     * 几种不同的优化后的候选集顺序[统计， 规则1，统计+规则1，规则2，统计+规则1+规则2]
+     *                还有一个总体统计的，但是比较占内存，这里没有用啦～
+     *                忽然觉得用prefix items为多的结果，是否有点不太好，因为3项集多的2项集也会多
+     */
+    public void prefixReSort(List<String> orders, List<String> candidateList, Map<String, Integer> restFirstMap, Map<String, Integer> restMap) {
+        int candidateListSize = candidateList.size();
+        HashMap<String, Integer> ruleValueMap = new HashMap<>();
+        for (int i = 0; i < candidateListSize; i++) {
+            ruleValueMap.put(candidateList.get(i), i);
+        }
+
+        // default设置为0，使在首部出现的往前面移动，其中restFirstMap是在首部出现的次数
+        candidateList.sort((o1, o2) -> (restFirstMap.getOrDefault(o2, 0) - restFirstMap.getOrDefault(o1, 0)));
+        resort(candidateList, orders, candidateListSize, ruleValueMap);
+
+        // 尤其是下面这里，不是很合适
+        // default设置为3，使经常在后面出现的排序往后移动，其中restMap是在非首部出现的次数
+        candidateList.sort(Comparator.comparingInt(o -> restMap.getOrDefault(o, 3)));
+        resort(candidateList, orders, candidateListSize, ruleValueMap);
+    }
+
+    private void resort(List<String> candidateList, List<String> orders, int candidateListSize, HashMap<String, Integer> ruleValueMap) {
+        orders.add(candidateList.toString());
+        for (int i = 0; i < candidateListSize; i++) {
+            String item = candidateList.get(i);
+            ruleValueMap.put(item, ruleValueMap.get(item) + i);
+        }
+        candidateList.sort((o1, o2) -> (ruleValueMap.get(o1) - ruleValueMap.get(o2)));
+        orders.add(candidateList.toString());
     }
 }

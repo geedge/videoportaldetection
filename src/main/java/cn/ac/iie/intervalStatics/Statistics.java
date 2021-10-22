@@ -4,10 +4,8 @@ import cn.ac.iie.Utils.SqlSessionFactoryUtils;
 import cn.ac.iie.Utils.URLHandleUtils;
 import cn.ac.iie.mapper.AVDataListMapper;
 import cn.ac.iie.pojo.AVlog;
-import com.sun.xml.internal.ws.policy.privateutil.PolicyUtils;
 import org.apache.ibatis.session.SqlSession;
 import org.junit.Test;
-import sun.awt.geom.AreaOp;
 
 import java.io.BufferedWriter;
 import java.io.FileWriter;

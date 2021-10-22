@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class VideoConsumer {
     private final Logger logger = LoggerFactory.getLogger(this.getClass().getName());
-    public static final String groupId="test";
+    public static final String groupId="test1";
     public static final AtomicBoolean isRunning=new AtomicBoolean(true);
     private ObjectMapper mapper = new ObjectMapper();
 
@@ -33,7 +33,8 @@ public class VideoConsumer {
         KafkaConsumer<String,String> consumer=new KafkaConsumer<>(properties);
 
         //订阅主题
-        consumer.subscribe(Arrays.asList(GetConf.KAFKA_AV_TOPIC));
+        //consumer.subscribe(Arrays.asList(GetConf.KAFKA_AV_TOPIC));
+        consumer.subscribe(Arrays.asList(GetConf.KAFKA_AV_TOPIC, "CONNECTION-RECORD-LOG"));
 
         try {
             ObjectMapper objectMapper = new ObjectMapper();         // 放到循环之外，性能会好一点
@@ -52,7 +53,7 @@ public class VideoConsumer {
                     JsonNode jsonNode = objectMapper.readTree(record.value());
                     //获取client_ip, client_port, found_time, recv_time, server_ip, server_port, url字段值
                     JsonNode client_ip = jsonNode.get("client_ip");
-                    String cip = client_ip.asText();
+                    //String cip = client_ip.asText();
                     JsonNode fount_time = jsonNode.get("found_time");
                     JsonNode recv_time = jsonNode.get("recv_time");
                     JsonNode url = jsonNode.get("url");
@@ -61,7 +62,9 @@ public class VideoConsumer {
                     //    staticFrequency.relationSSL2Redis(url.asText(), cip, fount_time.asLong(), 5);
 
                     // System.out.println(url.asText());
-                     System.out.println(record.value());
+                    System.out.println(record.value());
+                    if (url != null)
+                        System.out.println(url.asText());
                 }
                 // consumer.commitSync();
             }
@@ -113,7 +116,8 @@ public class VideoConsumer {
 
         // 因为是做测试，所以这里就不自动提交下标了
         properties.put("enable.auto.commit", "false");
-//        properties.put("auto.offset.reset", "earliest");
+        //properties.put("auto.offset.reset", "earliest");
+        properties.put("auto.offset.reset", "latest");
 
         return properties;
     }

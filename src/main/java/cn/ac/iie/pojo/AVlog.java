@@ -43,4 +43,7 @@ public class AVlog {
     @Setter
     private String user_agent;
 
+    @Getter
+    @Setter
+    private String referer_host;
 }

@@ -38,7 +38,7 @@ public class CKClient {
             yspHost = eachVideo.getUrl();
             if (yspHost.startsWith("200.200.200.200")) continue;
 
-            trafficLogList = avListMapper.getRelationListWithHost(eachFoundTime, eachClient_ip,10);
+            trafficLogList = avListMapper.getRelationListWithHost(eachFoundTime, eachClient_ip,10, 10);
             String relateHost;
             for (TrafficLog trafficLog : trafficLogList) {
                 if (trafficLog.getHttp_host() != null && trafficLog.getHttp_host().trim().length() != 0)

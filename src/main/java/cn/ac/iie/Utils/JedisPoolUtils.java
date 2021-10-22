@@ -29,7 +29,9 @@ public class JedisPoolUtils {
     static {
         Properties props = new Properties();
         try {
-            props.load(new java.io.FileInputStream("src/main/resources/redis.properties"));
+            // 在jar包中调用resources中的资源，要考虑路径的问题，用getClassLoader读取工作目录，由于jar属于压缩文件，所以不能用路径来读取，会出现jar!
+            //props.load(new java.io.FileInputStream(JedisPoolUtils.class.getClassLoader().getResource("redis.properties").getFile()));
+            props.load(JedisPoolUtils.class.getClassLoader().getResourceAsStream("redis.properties"));
         } catch (IOException e) {
             e.printStackTrace();
         }

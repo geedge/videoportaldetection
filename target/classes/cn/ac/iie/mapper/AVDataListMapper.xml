@@ -15,26 +15,28 @@
         from `av_event_log_local`
     </select>
 
+    <!--在大数据量场景下，这里可能需要加limit-->
     <select id="getRelationListWithHost" resultType="cn.ac.iie.pojo.TrafficLog">
-        select common_client_ip, common_client_port, common_server_ip, common_server_port, common_recv_time,
+        select common_client_ip, common_server_ip,
                common_start_time, http_url, http_host, http_domain, ssl_sni, ssl_cn
         from `connection_record_log_local`
-        where common_start_time &gt;= (#{found_time} - #{intervalTime})
-            and common_start_time &lt;= (#{found_time} + #{intervalTime})
+        where common_start_time &gt;= (#{found_time} - #{startInterval})
+            and common_start_time &lt;= (#{found_time} + #{endInterval})
             and common_client_ip = #{client_ip}
+            and (common_schema_type='HTTP' or common_schema_type='SSL')
     </select>
 
     <select id="getAVListWithReferer" resultType="cn.ac.iie.pojo.AVlog">
-        select client_ip, server_ip, url, referer, recv_time, found_time, expire_time
+        select client_ip, server_ip, url, domain(referer) as referer_host, recv_time, found_time, expire_time
         from `av_event_log_local`
         where length(referer) > 0
     </select>
 
     <select id="getReferPortal" resultType="cn.ac.iie.pojo.TrafficLog">
-        select common_client_ip, common_client_port, common_server_ip, common_server_port, common_recv_time,
-               common_start_time, http_url, http_host, http_domain, ssl_sni, ssl_cn
+        select common_client_ip, common_client_port, common_server_ip, common_server_port,
+               common_start_time, http_url, http_host, http_domain, ssl_sni
         from `connection_record_log_local`
-        where common_start_time &gt;= (#{found_time} - 30)
+        where common_start_time &gt;= (#{found_time} - 60)
             and common_start_time &lt;= (#{found_time} + 10)
             and common_client_ip = #{client_ip}
             and (http_host = #{host} or ssl_sni = #{host})
@@ -47,15 +49,21 @@
     </select>
 
     <select id="cumulativeData" resultType="Integer">
-        select count(url) from `av_event_log_local`
-        where url like #{urlPath} and recv_time &gt;= #{effectiveTime}
+        select count(url)
+        from `av_event_log_local`
+        where url like #{likeURL} and found_time &gt;= #{effectiveTime}
     </select>
 
     <select id="getHistoryHost" resultType="cn.ac.iie.pojo.AVlog">
-        select client_ip, server_ip, url, recv_time, found_time, expire_time
+        select client_ip, server_ip, url, found_time
         from `av_event_log_local`
-        where url like #{host}
-        order by recv_time desc
-        limit 100
+        where url like #{likeURL}
+        order by found_time desc
+        limit 80
+    </select>
+    <select id="getHostNeedMining" resultType="cn.ac.iie.pojo.AVlog">
+        select client_ip, server_ip, url, found_time
+        from `av_event_log_local`
+        where found_time &gt;= #{taskTime}
     </select>
 </mapper>

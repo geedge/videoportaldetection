@@ -1,9 +1,6 @@
 package cn.ac.iie.mining;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Iterator;
-import java.util.List;
+import java.util.*;
 
 import org.apache.spark.SparkContext;
 import org.apache.spark.api.java.function.MapFunction;
@@ -18,8 +15,9 @@ public class prefixSpark {
         SparkSession spark = SparkSession
                 .builder()
                 .appName("PrefixTest")
-                //.master("local[4]")
-                .master("spark://localhost:7077")
+                .master("local[4]")
+                //.master("spark://localhost:7077")
+                //.master("spark://hezhengjiedeMacBook-Pro.local:7077")
                 .getOrCreate();
 
         // $example on$
@@ -110,5 +108,19 @@ public class prefixSpark {
             }
         });
         System.out.println("oneItem: " + oneItem.toString());
+    }
+
+    @Test
+    public void testGrammer() {
+        HashMap<String ,Integer> hashMap = new HashMap<>();
+        hashMap.put("a", 11);
+        hashMap.put("b", 10);
+        hashMap.put("c", 12);
+        List<String> list = new ArrayList<>();
+        list.add("a");
+        list.add("b");
+        list.add("c");
+        list.sort((o1, o2) -> hashMap.get(o2) - hashMap.get(o1));
+        System.out.println(list.toString());
     }
 }
