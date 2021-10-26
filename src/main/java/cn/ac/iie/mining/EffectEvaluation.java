@@ -3,6 +3,8 @@ package cn.ac.iie.mining;
 
 import cn.ac.iie.Utils.JedisPoolUtils;
 import cn.ac.iie.Utils.URLHandleUtils;
+import cn.ac.iie.config.Configurations;
+import cn.ac.iie.pojo.TrafficLog;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.junit.Test;
@@ -28,12 +30,20 @@ public class EffectEvaluation {
             }
             BufferedReader br = new BufferedReader(new InputStreamReader(is));
             MiningService miningService = new MiningService();
-            int validateYspCmt = 0;
-            int validateYspSum = 0;
-            int yspCmt = 0;
-            Map<String, Integer[]> evaluateMap = new HashMap<>();
 
-            int testCnt = 0;
+            // prefix序列找到的数目
+            int validateYspCnt = 0;
+            // 统计找到的数目
+            int validateStatisticsYspCnt = 0;
+            // prefix序列的总长
+            int validateYspSum = 0;
+            // 当前处理的数目
+            int yspCnt = 0;
+
+            Map<String, Integer[]> evaluateMap = new HashMap<>();
+            List<String> lostYspHost = new ArrayList<>();
+            List<String> cantFindList = new ArrayList<>();
+            int cnt200 = 0;
 
             // client_ip, url, 经过处理的referer, fount_time, refer的start_time, interval
             String line = "";
@@ -44,22 +54,39 @@ public class EffectEvaluation {
                 String refererHost = item[2];
                 int[] resultIndex = itemEvaluate(cIp, yspHost, refererHost, miningService);
 
-                yspCmt += 1;
-                if (resultIndex[0] == -1) continue;
-                validateYspCmt += 1;
-                validateYspSum += resultIndex[6];
-                accumulateResult(evaluateMap, "statistic", resultIndex[1]);
-                accumulateResult(evaluateMap, "rule1", resultIndex[2]);
-                accumulateResult(evaluateMap, "sta_rule1", resultIndex[3]);
-                accumulateResult(evaluateMap, "rule2", resultIndex[4]);
-                accumulateResult(evaluateMap, "sta_rule1_rule2", resultIndex[5]);
+                yspCnt += 1;
+                switch (resultIndex[0]) {
+                    case 1:
+                        validateYspCnt += 1;
+                        validateYspSum += resultIndex[resultIndex.length - 1];
+                        accumulateResult(evaluateMap, "statistic", resultIndex[1]);
+                        accumulateResult(evaluateMap, "rule1", resultIndex[2]);
+                        accumulateResult(evaluateMap, "sta_rule1", resultIndex[3]);
+                        accumulateResult(evaluateMap, "rule2", resultIndex[4]);
+                        accumulateResult(evaluateMap, "sta_rule1_rule2", resultIndex[5]);
+                        accumulateResult(evaluateMap, "statistics_all", resultIndex[6]);
+                        if (resultIndex[6] == -1) cantFindList.add(yspHost);
+                        if (yspHost.startsWith("200.200.200.200")) cnt200 += 1;
+                        break;
+                    case 0:
+                        validateStatisticsYspCnt += 1;
+                        accumulateResult(evaluateMap, "statistics_all", resultIndex[6]);
+                        break;
+                    case -1:
+                        lostYspHost.add(yspHost);
+                        break;
+                }
 
-                testCnt += 1;
-                if (testCnt % 5 == 0) {
-                    logger.warn(String.format("目前处理第%d条", testCnt));
+                if (yspCnt % 5 == 0) {
+                    logger.warn(String.format("目前处理第%d条", yspCnt));
                 }
             }
-            printEvaluate(yspCmt, validateYspCmt, validateYspSum, evaluateMap);
+            printEvaluate(yspCnt, validateYspCnt, validateStatisticsYspCnt, validateYspSum, evaluateMap);
+            System.out.println(lostYspHost.toString());
+            System.out.println(String.format("不符合数据挖掘的个数为：%d", lostYspHost.size()));
+            System.out.println(cantFindList.toString());
+            System.out.println(String.format("未找到的个数为：%d", cantFindList.size()));
+            System.out.println(String.format("其中200的占了多少：%d", cnt200));
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -77,13 +104,26 @@ public class EffectEvaluation {
     public int[] itemEvaluate(String clientIP, String yspHost, String refererHost, MiningService miningService) {
         Jedis jedis = JedisPoolUtils.getJedis();
         if (jedis != null && jedis.exists(yspHost)) {
+
+            // 因为统计的暂时没计算，所以这里单独写
+            String cntAllCandidate = jedis.hget(yspHost, "statistics_all");
+            if (cntAllCandidate == null) {
+                List<List<TrafficLog>> sawContext = new ArrayList<>();
+                miningService.inputMemChecker(yspHost, sawContext);
+                cntAllCandidate = getAllHisList(sawContext, yspHost);
+                jedis.hset(yspHost,"statistics_all", cntAllCandidate);
+            }
+
             String statisticCandidate = jedis.hget(yspHost, "statistic");
             String rule1Candidate = jedis.hget(yspHost, "rule1");
             String staRule1Candidate = jedis.hget(yspHost, "sta_rule1");
             String rule2Candidate = jedis.hget(yspHost, "rule2");
             String prefixCandidate = jedis.hget(yspHost, "sta_rule1_rule2");
-            if (prefixCandidate == null || statisticCandidate == null || rule1Candidate == null || staRule1Candidate == null || rule2Candidate == null) {
+            if (prefixCandidate == null || statisticCandidate == null ||
+                    rule1Candidate == null || staRule1Candidate == null ||
+                    rule2Candidate == null || cntAllCandidate == null) {
                 // 此时计算
+                logger.warn("redis缓存不全");
                 int[] resultIndex = mining2Evaluate(yspHost, refererHost, miningService, jedis);
                 JedisPoolUtils.returnResource(jedis);
                 return resultIndex;
@@ -99,6 +139,7 @@ public class EffectEvaluation {
                         judgeIndex(staRule1Candidate, refererHost),
                         judgeIndex(rule2Candidate, refererHost),
                         judgeIndex(prefixCandidate, refererHost),
+                        judgeIndex(cntAllCandidate, refererHost),
                         statisticCandidate.split(", ").length
                 };
             }
@@ -106,7 +147,7 @@ public class EffectEvaluation {
         else {
             if (!miningService.isMore10(yspHost)) {
                 logger.warn(String.format("%s数据过少，不需要进行挖掘", yspHost));
-                return new int[]{-1, -1, -1, -1, -1, -1, -1};
+                return new int[]{-1, -1, -1, -1, -1, -1, -1, -1};
             }
             int[] resultIndex = mining2Evaluate(yspHost, refererHost, miningService, jedis);
             JedisPoolUtils.returnResource(jedis);
@@ -114,29 +155,68 @@ public class EffectEvaluation {
         }
     }
 
+    //TODO
     private int[] mining2Evaluate(String yspHost, String refererHost, MiningService miningService, Jedis jedis) {
-        ArrayList<Row> data = miningService.buildInput(yspHost);
-        logger.warn("数据构造完毕，开始序列挖掘");
-        Dataset<Row> sequence = miningService.relateHostMiningTask(data);
-        logger.warn("mining结束，写回Redis");
-        List<String> candidateList = miningService.miningCandidate(sequence);
-        if (jedis != null) {
-            jedis.hset(yspHost, "write_time", String.valueOf(System.currentTimeMillis()/1000L));
-            jedis.hset(yspHost, "statistic", candidateList.get(0));
-            jedis.hset(yspHost, "rule1", candidateList.get(1));
-            jedis.hset(yspHost, "sta_rule1", candidateList.get(2));
-            jedis.hset(yspHost, "rule2", candidateList.get(3));
-            jedis.hset(yspHost, "sta_rule1_rule2", candidateList.get(4));
+        List<List<TrafficLog>> sawContext = new ArrayList<>();
+        int handleWay = miningService.inputMemChecker(yspHost, sawContext);
+        String allHisCandidate = getAllHisList(sawContext, yspHost);
+        if (handleWay == 1) {
+            ArrayList<Row> data = miningService.buildInput(sawContext);
+            logger.warn("数据构造完毕，开始序列挖掘");
+            Dataset<Row> sequence = miningService.relateHostMiningTask(data);
+            logger.warn("mining结束，写回Redis");
+            List<String> candidateList = miningService.miningCandidate(sequence);
+            if (jedis != null) {
+                jedis.hset(yspHost, "write_time", String.valueOf(System.currentTimeMillis()/1000L));
+                jedis.hset(yspHost, "statistic", candidateList.get(0));
+                jedis.hset(yspHost, "rule1", candidateList.get(1));
+                jedis.hset(yspHost, "sta_rule1", candidateList.get(2));
+                jedis.hset(yspHost, "rule2", candidateList.get(3));
+                jedis.hset(yspHost, "sta_rule1_rule2", candidateList.get(4));
+                jedis.hset(yspHost, "statistics_all", allHisCandidate);
+            }
+            return new int[]{
+                    1,
+                    judgeIndex(candidateList.get(0), refererHost),
+                    judgeIndex(candidateList.get(1), refererHost),
+                    judgeIndex(candidateList.get(2), refererHost),
+                    judgeIndex(candidateList.get(3), refererHost),
+                    judgeIndex(candidateList.get(4), refererHost),
+                    judgeIndex(allHisCandidate, refererHost),
+                    candidateList.get(0).split(", ").length
+            };
         }
-        return new int[]{
-                1,
-                judgeIndex(candidateList.get(0), refererHost),
-                judgeIndex(candidateList.get(1), refererHost),
-                judgeIndex(candidateList.get(2), refererHost),
-                judgeIndex(candidateList.get(3), refererHost),
-                judgeIndex(candidateList.get(4), refererHost),
-                candidateList.get(0).split(", ").length
-        };
+        else {
+            logger.error("对%s进行挖掘容易造成堆内存溢出，暂不处理");
+            return new int[]{0, -1, -1, -1, -1, -1, judgeIndex(allHisCandidate, refererHost), -1};
+        }
+    }
+
+    /**
+     * 统计ysp总体上下文
+     * @param sawContext 从历史数据库中查到的上下文List
+     * @param yspHost ysp的host，打日志用
+     * @return 统计的候选集 candidateSize 限制了大小，如果不限制大小会浪费很大的内存
+     */
+    public String getAllHisList(List<List<TrafficLog>> sawContext, String yspHost) {
+        logger.warn(String.format("对%s进行总量统计", yspHost));
+        HashMap<String, Integer> cntAllMap = new HashMap<>();
+        for (List<TrafficLog> eachList: sawContext) {
+            for (TrafficLog trafficLog: eachList) {
+                String oneItemHTTPHost = trafficLog.getHttp_host();
+                String oneItemSNI = trafficLog.getSsl_sni();
+                if (oneItemHTTPHost != null && oneItemHTTPHost.length() > 0)
+                    cntAllMap.put(oneItemHTTPHost, cntAllMap.getOrDefault(oneItemHTTPHost, 0) + 1);
+                else if (oneItemSNI != null && oneItemSNI.length() > 0)
+                    cntAllMap.put(oneItemSNI, cntAllMap.getOrDefault(oneItemSNI, 0) + 1);
+            }
+        }
+        List<String> hisAllList = new ArrayList<>(cntAllMap.keySet());
+        hisAllList.sort( (o1, o2) -> cntAllMap.get(o2) - cntAllMap.get(o1) );
+        int candidateSize = Configurations.getIntProperty(0, "candidateSize");
+        if (hisAllList.size() > candidateSize)
+            return hisAllList.subList(0, candidateSize).toString();
+        else return hisAllList.toString();
     }
 
     /**
@@ -180,19 +260,30 @@ public class EffectEvaluation {
         }
     }
 
-    private void printEvaluate(int yspCmt, int validateYspCmt, int validateYspSum, Map<String, Integer[]> evaluateMap) {
-        System.out.println(String.format("在一定时间窗口且存在referer的YSP总数为%s，其中符合挖掘条件的个数为%s，候选集平均长度为%s",
+    private void printEvaluate(int yspCmt, int validateYspCmt, int validateStatisticsYspCnt,
+                               int validateYspSum, Map<String, Integer[]> evaluateMap) {
+        System.out.println(String.format("在一定时间窗口且存在referer的YSP总数为%s，其中符合挖掘条件的个数为%s，prefix候选集平均长度为%s",
                 yspCmt, validateYspCmt, validateYspSum /  (float) validateYspCmt));
         System.out.format("%18s%18s%18s%18s%18s%18s%18s%n", "Sorting rules", "Occurrences", "No-occurrence", "Index avg", "Prop pos=1", "Prop pos<5", "Prop pos<10");
         for (Map.Entry<String, Integer[]> entry : evaluateMap.entrySet()) {
             String key = entry.getKey();
             Integer[] value = entry.getValue();
-            System.out.format("%18s%18s%18s%18s%18s%18s%18s%n",
-                    key, value[0], value[1],
-                    value[2] / (float) validateYspCmt,
-                    value[3] / (float) validateYspCmt,
-                    value[4] / (float) validateYspCmt,
-                    value[5] / (float) validateYspCmt);
+            if (key.equals("statistics_all")) {
+                System.out.format("%18s%18s%18s%18s%18s%18s%18s%n",
+                        key, value[0], value[1],
+                        value[2] / (float) (validateYspCmt + validateStatisticsYspCnt),
+                        value[3] / (float) (validateYspCmt + validateStatisticsYspCnt),
+                        value[4] / (float) (validateYspCmt + validateStatisticsYspCnt),
+                        value[5] / (float) (validateYspCmt + validateStatisticsYspCnt));
+            }
+            else {
+                System.out.format("%18s%18s%18s%18s%18s%18s%18s%n",
+                        key, value[0], value[1],
+                        value[2] / (float) validateYspCmt,
+                        value[3] / (float) validateYspCmt,
+                        value[4] / (float) validateYspCmt,
+                        value[5] / (float) validateYspCmt);
+            }
         }
     }
 

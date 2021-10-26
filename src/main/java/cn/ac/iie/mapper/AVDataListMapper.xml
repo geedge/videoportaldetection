@@ -59,7 +59,7 @@
         from `av_event_log_local`
         where url like #{likeURL}
         order by found_time desc
-        limit 80
+        limit #{rawLimit}
     </select>
     <select id="getHostNeedMining" resultType="cn.ac.iie.pojo.AVlog">
         select client_ip, server_ip, url, found_time
