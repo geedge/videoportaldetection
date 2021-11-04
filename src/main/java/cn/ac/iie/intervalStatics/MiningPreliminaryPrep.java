@@ -1,16 +1,21 @@
 package cn.ac.iie.intervalStatics;
 
+import cats.kernel.Hash;
+import cn.ac.iie.Utils.JedisPoolUtils;
 import cn.ac.iie.Utils.SqlSessionFactoryUtils;
+import cn.ac.iie.Utils.URLHandleUtils;
 import cn.ac.iie.config.Configurations;
 import cn.ac.iie.mapper.AVDataListMapper;
+import cn.ac.iie.mining.MiningService;
 import cn.ac.iie.pojo.AVlog;
 import cn.ac.iie.pojo.TrafficLog;
 import org.apache.ibatis.session.SqlSession;
+import redis.clients.jedis.Jedis;
 
 import java.io.*;
 import java.util.*;
 
-public class HuaYanHttpInterval {
+public class MiningPreliminaryPrep {
     /**
      * 希望找到包含90%-95%的的时间窗口
      */
@@ -85,21 +90,20 @@ public class HuaYanHttpInterval {
         }
 
         System.out.println("候选集大小为: " + trainSet.size());
-        try (Writer writer = new OutputStreamWriter(new FileOutputStream("./data/testSet.txt"), "UTF-8")) {
+        try (Writer writer = new OutputStreamWriter(new FileOutputStream("./src/resource/testSet.txt"), "UTF-8")) {
             for (String line: trainSet) {
                 writer.write(line + "\r\n");
             }
         } catch (IOException e) {
             e.printStackTrace();
         }
-
     }
 
     public static void main(String[] args) {
         // 开始时间
         long stime = System.currentTimeMillis();
-        HuaYanHttpInterval huaYanHttpInterval = new HuaYanHttpInterval();
-        huaYanHttpInterval.generateTrainSet();
+        MiningPreliminaryPrep miningPreliminaryPrep = new MiningPreliminaryPrep();
+        miningPreliminaryPrep.generateTrainSet();
         // 结束时间
         long etime = System.currentTimeMillis();
         System.out.printf("执行时长：%d 毫秒.", (etime - stime));

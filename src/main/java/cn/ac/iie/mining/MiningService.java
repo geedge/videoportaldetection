@@ -1,6 +1,7 @@
 package cn.ac.iie.mining;
 
 import cn.ac.iie.Utils.JedisPoolUtils;
+import cn.ac.iie.Utils.SparkFactoryUtils;
 import cn.ac.iie.Utils.SqlSessionFactoryUtils;
 import cn.ac.iie.Utils.URLHandleUtils;
 import cn.ac.iie.config.Configurations;
@@ -15,13 +16,10 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
-import org.apache.spark.SparkConf;
-import org.apache.spark.SparkContext;
 import org.apache.spark.ml.fpm.PrefixSpan;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.RowFactory;
-import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.types.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -62,48 +60,19 @@ public class MiningService {
         return properties;
     }
 
-    private static SqlSession sqlSession;
+    private SqlSession sqlSession = SqlSessionFactoryUtils.getSqlSessionFactory().openSession();
     private static Jedis jedis;
-    private static AVDataListMapper avListMapper;
-
-    private static SparkConf conf = new SparkConf()
-            .setAppName("PrefixSpanHosts"+System.currentTimeMillis())
-            //.setMaster(Configurations.getStringProperty(0, "Spark.master"))
-            // 指定本机IP为driver
-            //.setIfMissing("spark.driver.host", "192.168.36.69")
-            //.setJars(new String[]{"out/artifacts/VideoPortalDetection_jar/VideoPortalDetection.jar"})
-            .set("spark.executor.extraJavaOptions", "-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=./dumpex")
-            .set("spark.driver.extraJavaOptions", "-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=./dumpdr")
-            //.set("spark.driver.memory", "10g")
-            //.set("spark.executor.memory", "10g")
-            ;
-
-    private static SparkSession spark = SparkSession
-            .builder()
-            //.appName("PrefixSpanHosts")
-            .master("local[*]")
-            //.master("spark://hezhengjiedeMacBook-Pro.local:7077")
-            //.master(Configurations.getStringProperty(0, "Spark.master"))
-            // 这里还需要setJars
-            .config(conf)
-            .getOrCreate();
+    private AVDataListMapper avListMapper = sqlSession.getMapper(AVDataListMapper.class);;
 
     /**
      * TODO:各种session的范围应该放在方法里，保证可以合理关闭和私有
      * 这里在静态变量开启了
      */
-    private static SparkContext sc = spark.sparkContext();
-
     static {
-        sqlSession = SqlSessionFactoryUtils.getSqlSessionFactory().openSession();
-        avListMapper = sqlSession.getMapper(AVDataListMapper.class);
-
         if (jedis == null) {
             JedisPoolUtils.getJedisPoolInstance();
             jedis = JedisPoolUtils.getJedis();
         }
-
-        sc.setLogLevel("WARN");
     }
 
     public void consumeKafka() {
@@ -265,7 +234,7 @@ public class MiningService {
         logger.warn(String.format("%s过去曾出现过%d次", urlHost, aVlogs.size()));
         int historyCnt = aVlogs.size();
         int maxColSize = Math.min(historyCnt*Configurations.getIntProperty(0, "ratioRawCol"),
-                Configurations.getIntProperty(0, "leastHistoryNum"));
+                Configurations.getIntProperty(0, "colLimit"));
         int overflowCols = 0;
 
         if (sawContext == null) {
@@ -316,7 +285,7 @@ public class MiningService {
                 "sequence", new ArrayType(new ArrayType(DataTypes.StringType, true), true),
                 false, Metadata.empty())
         });
-        Dataset<Row> sequenceDF = spark.createDataFrame(data, schema);
+        Dataset<Row> sequenceDF = SparkFactoryUtils.getSparkSessionFactory().createDataFrame(data, schema);
         sequenceDF.show(20, true);
         //sequenceDF.show(50, false);
         PrefixSpan prefixSpan = new PrefixSpan().setMinSupport(Configurations.getDoubleProperty(0, "prefixConfidence")).setMaxPatternLength(5);
@@ -417,6 +386,33 @@ public class MiningService {
         // default设置为3，使经常在后面出现的排序往后移动，其中restMap是在非首部出现的次数
         candidateList.sort(Comparator.comparingInt(o -> restMap.getOrDefault(o, 3)));
         resort(candidateList, orders, candidateListSize, ruleValueMap);
+    }
+
+    /**
+     * 统计ysp总体上下文
+     * @param sawContext 从历史数据库中查到的上下文List
+     * @param yspHost ysp的host，打日志用
+     * @return 统计的候选集 candidateSize 限制了大小，如果不限制大小会浪费很大的内存
+     */
+    public String getAllHisList(List<List<TrafficLog>> sawContext, String yspHost) {
+        logger.warn(String.format("对%s进行总量统计", yspHost));
+        HashMap<String, Integer> cntAllMap = new HashMap<>();
+        for (List<TrafficLog> eachList: sawContext) {
+            for (TrafficLog trafficLog: eachList) {
+                String oneItemHTTPHost = trafficLog.getHttp_host();
+                String oneItemSNI = trafficLog.getSsl_sni();
+                if (oneItemHTTPHost != null && oneItemHTTPHost.length() > 0)
+                    cntAllMap.put(oneItemHTTPHost, cntAllMap.getOrDefault(oneItemHTTPHost, 0) + 1);
+                else if (oneItemSNI != null && oneItemSNI.length() > 0)
+                    cntAllMap.put(oneItemSNI, cntAllMap.getOrDefault(oneItemSNI, 0) + 1);
+            }
+        }
+        List<String> hisAllList = new ArrayList<>(cntAllMap.keySet());
+        hisAllList.sort( (o1, o2) -> cntAllMap.get(o2) - cntAllMap.get(o1) );
+        int candidateSize = Configurations.getIntProperty(0, "candidateSize");
+        if (hisAllList.size() > candidateSize)
+            return hisAllList.subList(0, candidateSize).toString();
+        else return hisAllList.toString();
     }
 
     private void resort(List<String> candidateList, List<String> orders, int candidateListSize, HashMap<String, Integer> ruleValueMap) {

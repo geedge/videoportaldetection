@@ -110,7 +110,7 @@ public class EffectEvaluation {
             if (cntAllCandidate == null) {
                 List<List<TrafficLog>> sawContext = new ArrayList<>();
                 miningService.inputMemChecker(yspHost, sawContext);
-                cntAllCandidate = getAllHisList(sawContext, yspHost);
+                cntAllCandidate = miningService.getAllHisList(sawContext, yspHost);
                 jedis.hset(yspHost,"statistics_all", cntAllCandidate);
             }
 
@@ -159,7 +159,7 @@ public class EffectEvaluation {
     private int[] mining2Evaluate(String yspHost, String refererHost, MiningService miningService, Jedis jedis) {
         List<List<TrafficLog>> sawContext = new ArrayList<>();
         int handleWay = miningService.inputMemChecker(yspHost, sawContext);
-        String allHisCandidate = getAllHisList(sawContext, yspHost);
+        String allHisCandidate = miningService.getAllHisList(sawContext, yspHost);
         if (handleWay == 1) {
             ArrayList<Row> data = miningService.buildInput(sawContext);
             logger.warn("数据构造完毕，开始序列挖掘");
@@ -187,36 +187,9 @@ public class EffectEvaluation {
             };
         }
         else {
-            logger.error("对%s进行挖掘容易造成堆内存溢出，暂不处理");
+            logger.error(String.format("对%s进行挖掘容易造成堆内存溢出，暂不处理", yspHost));
             return new int[]{0, -1, -1, -1, -1, -1, judgeIndex(allHisCandidate, refererHost), -1};
         }
-    }
-
-    /**
-     * 统计ysp总体上下文
-     * @param sawContext 从历史数据库中查到的上下文List
-     * @param yspHost ysp的host，打日志用
-     * @return 统计的候选集 candidateSize 限制了大小，如果不限制大小会浪费很大的内存
-     */
-    public String getAllHisList(List<List<TrafficLog>> sawContext, String yspHost) {
-        logger.warn(String.format("对%s进行总量统计", yspHost));
-        HashMap<String, Integer> cntAllMap = new HashMap<>();
-        for (List<TrafficLog> eachList: sawContext) {
-            for (TrafficLog trafficLog: eachList) {
-                String oneItemHTTPHost = trafficLog.getHttp_host();
-                String oneItemSNI = trafficLog.getSsl_sni();
-                if (oneItemHTTPHost != null && oneItemHTTPHost.length() > 0)
-                    cntAllMap.put(oneItemHTTPHost, cntAllMap.getOrDefault(oneItemHTTPHost, 0) + 1);
-                else if (oneItemSNI != null && oneItemSNI.length() > 0)
-                    cntAllMap.put(oneItemSNI, cntAllMap.getOrDefault(oneItemSNI, 0) + 1);
-            }
-        }
-        List<String> hisAllList = new ArrayList<>(cntAllMap.keySet());
-        hisAllList.sort( (o1, o2) -> cntAllMap.get(o2) - cntAllMap.get(o1) );
-        int candidateSize = Configurations.getIntProperty(0, "candidateSize");
-        if (hisAllList.size() > candidateSize)
-            return hisAllList.subList(0, candidateSize).toString();
-        else return hisAllList.toString();
     }
 
     /**
