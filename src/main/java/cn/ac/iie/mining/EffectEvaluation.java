@@ -3,7 +3,6 @@ package cn.ac.iie.mining;
 
 import cn.ac.iie.Utils.JedisPoolUtils;
 import cn.ac.iie.Utils.URLHandleUtils;
-import cn.ac.iie.config.Configurations;
 import cn.ac.iie.pojo.TrafficLog;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
@@ -56,6 +55,7 @@ public class EffectEvaluation {
 
                 yspCnt += 1;
                 switch (resultIndex[0]) {
+                    // 正常进行序列挖掘
                     case 1:
                         validateYspCnt += 1;
                         validateYspSum += resultIndex[resultIndex.length - 1];
@@ -68,10 +68,12 @@ public class EffectEvaluation {
                         if (resultIndex[6] == -1) cantFindList.add(yspHost);
                         if (yspHost.startsWith("200.200.200.200")) cnt200 += 1;
                         break;
+                    // 防止OOM，仅采用统计
                     case 0:
                         validateStatisticsYspCnt += 1;
                         accumulateResult(evaluateMap, "statistics_all", resultIndex[6]);
                         break;
+                    // 数量过少，不符合众包思想，不进行统计或者序列挖掘
                     case -1:
                         lostYspHost.add(yspHost);
                         break;
@@ -82,10 +84,11 @@ public class EffectEvaluation {
                 }
             }
             printEvaluate(yspCnt, validateYspCnt, validateStatisticsYspCnt, validateYspSum, evaluateMap);
-            System.out.println(lostYspHost.toString());
-            System.out.println(String.format("不符合数据挖掘的个数为：%d", lostYspHost.size()));
-            System.out.println(cantFindList.toString());
-            System.out.println(String.format("未找到的个数为：%d", cantFindList.size()));
+            //System.out.println(lostYspHost.toString());
+            System.out.println(String.format("不符合众包条件（小于最小挖掘数目）的个数为：%d", lostYspHost.size()));
+            System.out.println(String.format("防止OOM的个数位:%d", validateStatisticsYspCnt));
+            System.out.println(String.format("众包未找到的个数为：%d", cantFindList.size()));
+            //System.out.println(cantFindList.toString());
             System.out.println(String.format("其中200的占了多少：%d", cnt200));
         } catch (IOException e) {
             e.printStackTrace();
@@ -105,20 +108,12 @@ public class EffectEvaluation {
         Jedis jedis = JedisPoolUtils.getJedis();
         if (jedis != null && jedis.exists(yspHost)) {
 
-            // 因为统计的暂时没计算，所以这里单独写
-            String cntAllCandidate = jedis.hget(yspHost, "statistics_all");
-            if (cntAllCandidate == null) {
-                List<List<TrafficLog>> sawContext = new ArrayList<>();
-                miningService.inputMemChecker(yspHost, sawContext);
-                cntAllCandidate = miningService.getAllHisList(sawContext, yspHost);
-                jedis.hset(yspHost,"statistics_all", cntAllCandidate);
-            }
-
             String statisticCandidate = jedis.hget(yspHost, "statistic");
             String rule1Candidate = jedis.hget(yspHost, "rule1");
             String staRule1Candidate = jedis.hget(yspHost, "sta_rule1");
             String rule2Candidate = jedis.hget(yspHost, "rule2");
             String prefixCandidate = jedis.hget(yspHost, "sta_rule1_rule2");
+            String cntAllCandidate = jedis.hget(yspHost, "statistics_all");
             if (prefixCandidate == null || statisticCandidate == null ||
                     rule1Candidate == null || staRule1Candidate == null ||
                     rule2Candidate == null || cntAllCandidate == null) {

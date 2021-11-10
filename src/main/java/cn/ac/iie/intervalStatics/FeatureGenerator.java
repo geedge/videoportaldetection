@@ -6,10 +6,10 @@ import cn.ac.iie.Utils.SqlSessionFactoryUtils;
 import cn.ac.iie.Utils.URLHandleUtils;
 import cn.ac.iie.config.Configurations;
 import cn.ac.iie.mapper.AVDataListMapper;
-import cn.ac.iie.mining.MiningService;
 import cn.ac.iie.pojo.AVlog;
 import cn.ac.iie.pojo.TrafficLog;
 import org.apache.ibatis.session.SqlSession;
+import org.apache.log4j.PropertyConfigurator;
 import org.apache.spark.ml.fpm.PrefixSpan;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
@@ -24,6 +24,10 @@ import java.io.*;
 import java.util.*;
 
 public class FeatureGenerator {
+    static {
+        InputStream inputStream=FeatureGenerator.class.getResourceAsStream("/log4j.properties");
+        PropertyConfigurator.configure(inputStream);
+    }
     private static Logger logger = LoggerFactory.getLogger(FeatureGenerator.class);
 
     /**
@@ -45,7 +49,6 @@ public class FeatureGenerator {
             AVDataListMapper avListMapper = sqlSession.getMapper(AVDataListMapper.class);
 
             BufferedReader br = new BufferedReader(new InputStreamReader(is));
-            MiningService miningService = new MiningService();
             Jedis jedis = JedisPoolUtils.getJedis();
 
             String line = "";
@@ -63,7 +66,7 @@ public class FeatureGenerator {
 
                     String candSet = jedis.hget(yspHost, "candSet");
                     if (candSet == null) {
-                        buildCandSet(yspHost, refererHost, writer, jedis, avListMapper);
+                        recallAndResort(yspHost, refererHost, writer, jedis, avListMapper);
                     }
                     else {
                         logger.warn(String.format("%s在Cache中存在", yspHost));
@@ -151,12 +154,16 @@ public class FeatureGenerator {
         return dp[word1Len][word2Len];
     }
 
-    private void buildCandSet(String yspHost, String referHost, Writer writer, Jedis jedis, AVDataListMapper avListMapper) throws IOException {
+    private void recallAndResort(String yspHost, String referHost, Writer writer, Jedis jedis, AVDataListMapper avListMapper) throws IOException {
         String likeUrl = '%' + yspHost + '%';
         List<AVlog> aVlogs = avListMapper.getHistoryHost(likeUrl, Configurations.getIntProperty(0, "rawLimit"));
         logger.warn(String.format("%s过去曾出现过%d次", yspHost, aVlogs.size()));
 
+        // 统计历史总量的Hash表，用于召回
         HashMap<String, Integer> allHisMap = new HashMap<>();
+        // 编辑距离的Hash表，用于召回
+        HashMap<String, Integer> distanceHash = new HashMap<>();
+
         ArrayList<Row> data = new ArrayList<>();
         int historyCnt = aVlogs.size();
         int maxColSize = Math.min(historyCnt * Configurations.getIntProperty(0, "ratioRawCol"),
@@ -181,10 +188,16 @@ public class FeatureGenerator {
                         if (oneItemSNI != null && oneItemSNI.length() > 0) {
                             allHisMap.put(oneItemSNI, allHisMap.getOrDefault(oneItemSNI, 0) + 1);
                             row.add(Arrays.asList(oneItemSNI));
+                            if (!distanceHash.containsKey(oneItemSNI)) {
+                                distanceHash.put(oneItemSNI, minDistance(yspHost, oneItemSNI));
+                            }
                         }
                         else if (oneItemHTTPHost != null && oneItemHTTPHost.length() > 0) {
                             allHisMap.put(oneItemHTTPHost, allHisMap.getOrDefault(oneItemHTTPHost, 0) + 1);
                             row.add(Arrays.asList(oneItemHTTPHost));
+                            if (!distanceHash.containsKey(oneItemHTTPHost)) {
+                                distanceHash.put(oneItemHTTPHost, minDistance(yspHost, oneItemHTTPHost));
+                            }
                         }
                     }
                     data.add(RowFactory.create(row));
@@ -197,18 +210,7 @@ public class FeatureGenerator {
             return;
         }
 
-        // 这里的candidateSet由统计和prefix一项集组成
-        List<String> candidateList;
-        List<String> hisAllList = new ArrayList<>(allHisMap.keySet());
-        hisAllList.sort( (o1, o2) -> allHisMap.get(o2) - allHisMap.get(o1) );
-        int candidateSize = Configurations.getIntProperty(0, "candidateSize");
-        if (hisAllList.size() > candidateSize)
-            candidateList = hisAllList.subList(0, candidateSize);
-        else candidateList = hisAllList;
-        Set<String> candSet = new HashSet<>(candidateList);
-
-        // 哈希表
-
+        Set<String> candSet = recallCandidate(allHisMap, distanceHash);
 
         logger.warn("数据构造完毕，开始序列挖掘");
         StructType schema = new StructType(new StructField[]{ new StructField(
@@ -219,7 +221,6 @@ public class FeatureGenerator {
         sequenceDF.show(20, true);
         //sequenceDF.show(50, false);
         PrefixSpan prefixSpan = new PrefixSpan().setMinSupport(Configurations.getDoubleProperty(0, "prefixConfidence")).setMaxPatternLength(5);
-
         // Finding frequent sequential patterns
         Dataset<Row> sequence = prefixSpan.findFrequentSequentialPatterns(sequenceDF);
         sequence.show(10, false);
@@ -240,14 +241,15 @@ public class FeatureGenerator {
                         // 一项集
                         candidateItem = (String)firstItem.apply(0);
                         Long freq = (Long) each.get(1);
-                        if (prefixCntMap.containsKey(candidateItem)) {
-                            if (prefixCntMap.get(candidateItem) < freq)
-                                prefixCntMap.put(candidateItem, freq);
-                        }
-                        else {
-                            candSet.add(candidateItem);
-                            prefixCntMap.put(candidateItem, freq);
-                        }
+                        prefixCntMap.put(candidateItem, freq);
+                        //if (prefixCntMap.containsKey(candidateItem)) {
+                        //    if (prefixCntMap.get(candidateItem) < freq)
+                        //        prefixCntMap.put(candidateItem, freq);
+                        //}
+                        //else {
+                        //    candSet.add(candidateItem);
+                        //    prefixCntMap.put(candidateItem, freq);
+                        //}
                     }
                     else {
                         // 非一项集
@@ -271,9 +273,42 @@ public class FeatureGenerator {
         featureWrite(yspHost, referHost, writer, jedis, allHisMap, prefixCntMap, restFirstMap, restMap, candSet);
     }
 
+    private Set<String> recallCandidate(HashMap<String, Integer> allHisMap, HashMap<String, Integer> distanceHash) {
+        // 这里的candidateSet由统计和prefix一项集组成
+        List<String> hisAllList = new ArrayList<>(allHisMap.keySet());
+        hisAllList.sort( (o1, o2) -> allHisMap.get(o2) - allHisMap.get(o1) );
+        int candidateSize = Configurations.getIntProperty(0, "candidateSize");
+        List<String> candidateList;
+        if (hisAllList.size() > candidateSize)
+            candidateList = hisAllList.subList(0, candidateSize);
+        else candidateList = hisAllList;
+        Set<String> candSet = new HashSet<>(candidateList);
+
+        int len = candSet.size();
+        hisAllList.sort(Comparator.comparingInt(distanceHash::get));
+        for (int i = 0; i < len; i++) {
+            candSet.add(hisAllList.get(i));
+        }
+
+        return candSet;
+    }
+
+    public void refreshCache() {
+        logger.warn("清除Cache");
+        Jedis jedis = JedisPoolUtils.getJedis();
+        assert jedis != null;
+        Set<String> cacheKeys = jedis.keys("*");
+        for (String key: cacheKeys) {
+            jedis.hdel(key, "candSet");
+        }
+        JedisPoolUtils.returnResource(jedis);
+    }
+
 
     public static void main(String[] args) {
         FeatureGenerator featureGenerator = new FeatureGenerator();
+        logger.warn("特征生成任务开始...");
+        featureGenerator.refreshCache();
         featureGenerator.featureExtracFromFile();
     }
 
