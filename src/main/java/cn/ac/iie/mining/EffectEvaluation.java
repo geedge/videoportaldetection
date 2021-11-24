@@ -21,8 +21,9 @@ public class EffectEvaluation {
      * 评估指标：平均出现出现index最小的顺序，最小顺序中在第1次出现的占比，在前5次出现的占比，在前10次出现的占比，不出现的占比
      * 计算：出现次数，不出现的次数，每个方案出现的index之和，每个方案第1次出现的次数，每个方案在前5次出现的次数，每个方案在前10次出现的次数
      */
-    public void evaluateFromFile() {
-        try (InputStream is = this.getClass().getClassLoader().getResourceAsStream("testSet.txt")){
+    public void evaluateFromFile(String evaFile) {
+        String sourcePath = evaFile.startsWith("testSet") ? evaFile : "textSet.txt";
+        try (InputStream is = this.getClass().getClassLoader().getResourceAsStream(sourcePath)){
             if (is == null) {
                 System.out.println("评估文件不存在");
                 System.exit(0);
@@ -51,7 +52,7 @@ public class EffectEvaluation {
                 String cIp = item[0];
                 String yspHost = URLHandleUtils.getFirstURLPath(item[1]);
                 String refererHost = item[2];
-                int[] resultIndex = itemEvaluate(cIp, yspHost, refererHost, miningService);
+                int[] resultIndex = itemEvaluate(yspHost, refererHost, miningService);
 
                 yspCnt += 1;
                 switch (resultIndex[0]) {
@@ -104,7 +105,7 @@ public class EffectEvaluation {
      * 如果要用redis去避免重复计算的话，需要同时存几种不同的方案
      * @return 返回值为长度为4的数组，[是否加入训练(0/1)，统计，规则1，统计+规则1，规则2，统计+规则1+规则2]
      */
-    public int[] itemEvaluate(String clientIP, String yspHost, String refererHost, MiningService miningService) {
+    public int[] itemEvaluate(String yspHost, String refererHost, MiningService miningService) {
         Jedis jedis = JedisPoolUtils.getJedis();
         if (jedis != null && jedis.exists(yspHost)) {
 
@@ -275,6 +276,6 @@ public class EffectEvaluation {
 
     public static void main(String[] args) {
         EffectEvaluation effectEvaluation = new EffectEvaluation();
-        effectEvaluation.evaluateFromFile();
+        effectEvaluation.evaluateFromFile("testSetWeb.txt");
     }
 }

@@ -273,6 +273,12 @@ public class FeatureGenerator {
         featureWrite(yspHost, referHost, writer, jedis, allHisMap, prefixCntMap, restFirstMap, restMap, candSet);
     }
 
+    /**
+     * 构造candidate召回集
+     * @param allHisMap
+     * @param distanceHash
+     * @return 候选集
+     */
     private Set<String> recallCandidate(HashMap<String, Integer> allHisMap, HashMap<String, Integer> distanceHash) {
         // 这里的candidateSet由统计和prefix一项集组成
         List<String> hisAllList = new ArrayList<>(allHisMap.keySet());

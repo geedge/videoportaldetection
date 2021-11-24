@@ -40,6 +40,7 @@
             and common_start_time &lt;= (#{found_time} + 10)
             and common_client_ip = #{client_ip}
             and (http_host = #{host} or ssl_sni = #{host})
+        limit 1
     </select>
 
     <select id="statisticsUA" resultType="cn.ac.iie.pojo.AVlog">
@@ -61,9 +62,22 @@
         order by found_time desc
         limit #{rawLimit}
     </select>
+
     <select id="getHostNeedMining" resultType="cn.ac.iie.pojo.AVlog">
         select client_ip, server_ip, url, found_time
         from `av_event_log_local`
         where found_time &gt;= #{taskTime}
+    </select>
+
+    <select id="getAVListReferForWeb" resultType="cn.ac.iie.pojo.AVlog">
+        select
+            client_ip, url, domain(referer) as referer_host, found_time
+        from
+            `av_event_log_local`
+        where
+            length(referer) > 0
+            and (user_agent like '%Chrome/9%' or user_agent like '%Chrome/8%' or user_agent like '%Mac%')
+	        and user_agent not like '%Mobile%'
+	        and server_ip &lt;&gt; '200.200.200.200'
     </select>
 </mapper>

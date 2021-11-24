@@ -1,18 +1,14 @@
 package cn.ac.iie.intervalStatics;
 
-import cats.kernel.Hash;
-import cn.ac.iie.Utils.JedisPoolUtils;
 import cn.ac.iie.Utils.SqlSessionFactoryUtils;
-import cn.ac.iie.Utils.URLHandleUtils;
 import cn.ac.iie.config.Configurations;
 import cn.ac.iie.mapper.AVDataListMapper;
-import cn.ac.iie.mining.MiningService;
 import cn.ac.iie.pojo.AVlog;
 import cn.ac.iie.pojo.TrafficLog;
 import org.apache.ibatis.session.SqlSession;
-import redis.clients.jedis.Jedis;
 
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 public class MiningPreliminaryPrep {
@@ -59,18 +55,28 @@ public class MiningPreliminaryPrep {
     /**
      * 生成明文能找到referer的测试集，每一行如下格式：
      * client_ip, url, 经过处理的referer, fount_time, refer的start_time, interval
+     * Node：生成训练数据集的函数不能再jar包中执行，因为路径问题
      */
-    public void generateTrainSet() {
+    public void generateTrainSet(String dataExp) {
         SqlSession sqlSession = SqlSessionFactoryUtils.getSqlSessionFactory().openSession();
         AVDataListMapper avListMapper = sqlSession.getMapper(AVDataListMapper.class);
-        // 这里sql应该改为distinct
-        List<AVlog> aVRefererlogList = avListMapper.getAVListWithReferer();
+
+        // 这里sql在特定场景应该改为distinct，虽然不distinct的话url不同，但是计算的时候是根据host来的
+        List<AVlog> aVRefererlogList;
+        if (dataExp.toLowerCase().equals("web")) {
+            aVRefererlogList = avListMapper.getAVListReferForWeb();
+        }
+        else {
+            aVRefererlogList = avListMapper.getAVListWithReferer();
+        }
         Set<String> trainSet = new HashSet<>();
 
         System.out.println(String.format("目前共%s有referer", aVRefererlogList.size()));
         List<TrafficLog> trafficLogList;
         for(AVlog eachVideo : aVRefererlogList) {
             String eachClient_ip = eachVideo.getClient_ip();
+
+            // 这里的refer在查询的时候已经经过了CK的domain函数处理
             String eachRefHost = eachVideo.getReferer_host();
             long eachFoundTime = eachVideo.getFound_time();
 
@@ -88,9 +94,11 @@ public class MiningPreliminaryPrep {
                 trainSet.add(line);
             }
         }
+        sqlSession.close();
 
         System.out.println("候选集大小为: " + trainSet.size());
-        try (Writer writer = new OutputStreamWriter(new FileOutputStream("./src/resource/testSet.txt"), "UTF-8")) {
+        String outPath = "./src/main/resources/testSet" + dataExp + ".txt";
+        try (Writer writer = new OutputStreamWriter(new FileOutputStream(outPath), StandardCharsets.UTF_8)) {
             for (String line: trainSet) {
                 writer.write(line + "\r\n");
             }
@@ -103,9 +111,9 @@ public class MiningPreliminaryPrep {
         // 开始时间
         long stime = System.currentTimeMillis();
         MiningPreliminaryPrep miningPreliminaryPrep = new MiningPreliminaryPrep();
-        miningPreliminaryPrep.generateTrainSet();
+        miningPreliminaryPrep.generateTrainSet("ALL");
         // 结束时间
         long etime = System.currentTimeMillis();
-        System.out.printf("执行时长：%d 毫秒.", (etime - stime));
+        System.out.printf("执行时长：%f 分钟.", (etime - stime) / 60000.0);
     }
 }

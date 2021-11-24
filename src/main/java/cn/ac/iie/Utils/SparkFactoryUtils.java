@@ -10,7 +10,7 @@ public class SparkFactoryUtils {
     static {
         SparkConf conf = new SparkConf()
                 .setAppName("PrefixSpanHosts"+System.currentTimeMillis())
-                .setMaster(Configurations.getStringProperty(0, "Spark.master"))
+                //.setMaster(Configurations.getStringProperty(0, "Spark.master"))
                 .set("spark.executor.extraJavaOptions", "-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=./dumpex")
                 .set("spark.driver.extraJavaOptions", "-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=./dumpdr")
                 .set("spark.driver.memory", "10g")
@@ -18,7 +18,7 @@ public class SparkFactoryUtils {
         ;
         spark = SparkSession
                 .builder()
-                //.master("local[*]")
+                .master("local[*]")
                 .config(conf)
                 .getOrCreate();
         SparkContext sc = spark.sparkContext();

@@ -286,7 +286,7 @@ public class MiningService {
                 false, Metadata.empty())
         });
         Dataset<Row> sequenceDF = SparkFactoryUtils.getSparkSessionFactory().createDataFrame(data, schema);
-        sequenceDF.show(20, true);
+        sequenceDF.show(20, false);
         //sequenceDF.show(50, false);
         PrefixSpan prefixSpan = new PrefixSpan().setMinSupport(Configurations.getDoubleProperty(0, "prefixConfidence")).setMaxPatternLength(5);
 
