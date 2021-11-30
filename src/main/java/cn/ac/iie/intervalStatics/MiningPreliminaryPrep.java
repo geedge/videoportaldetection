@@ -78,6 +78,8 @@ public class MiningPreliminaryPrep {
 
             // 这里的refer在查询的时候已经经过了CK的domain函数处理
             String eachRefHost = eachVideo.getReferer_host();
+            // 去除不晓得谁在爬好看视频
+            if (eachRefHost.equals("haokan.baidu.com")) continue;
             long eachFoundTime = eachVideo.getFound_time();
 
             trafficLogList = avListMapper.getReferPortal(eachFoundTime, eachClient_ip, eachRefHost);

@@ -24,6 +24,7 @@
             and common_start_time &lt;= (#{found_time} + #{endInterval})
             and common_client_ip = #{client_ip}
             and (common_schema_type='HTTP' or common_schema_type='SSL')
+        order by common_start_time desc
     </select>
 
     <select id="getAVListWithReferer" resultType="cn.ac.iie.pojo.AVlog">
@@ -79,5 +80,19 @@
             and (user_agent like '%Chrome/9%' or user_agent like '%Chrome/8%' or user_agent like '%Mac%')
 	        and user_agent not like '%Mobile%'
 	        and server_ip &lt;&gt; '200.200.200.200'
+    </select>
+
+    <select id="getUniqAVListForAll" resultType="cn.ac.iie.pojo.AVlog">
+        select
+            url
+        from
+	        (select
+		        domain(url) as url,
+		        count(*) as cnt
+	        from
+		        av_event_log
+	        where server_ip != '200.200.200.200'
+	        group by url) T
+        where cnt >= 5
     </select>
 </mapper>

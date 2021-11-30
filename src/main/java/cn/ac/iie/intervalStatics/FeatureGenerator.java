@@ -105,16 +105,32 @@ public class FeatureGenerator {
      */
     private int featureWrite(String urlHost, String referHost, Writer writer, Jedis jedis,
                              Map<String, Integer> allHisMap, Map<String, Long> prefixCntMap,
-                             Map<String, Integer> rule1Map, Map<String, Integer> rule2Map, Set<String> candSet) throws IOException {
+                             Map<String, Integer[]> rule1Map, Map<String, Integer[]> rule2Map,
+                             Map<String, Integer> occHash, Map<String, Integer> disToYspMap,
+                             Set<String> candSet, float candHostSum, float hisSum, float freqPatterns) throws IOException {
         for (String thisHost : candSet) {
-            if (rule1Map.containsKey(thisHost) || allHisMap.containsKey(thisHost)) {
+            if ((rule1Map.containsKey(thisHost) || allHisMap.containsKey(thisHost)) && thisHost.length() > 0) {
                 // 注意这里默认为0，但是就语义而言，rule2的为0是最好的，不过暂时还是设置为0吧
                 String value = allHisMap.getOrDefault(thisHost, 0) + "," +
+                        allHisMap.getOrDefault(thisHost, 0) / hisSum + "," +
+                        allHisMap.getOrDefault(thisHost, 0) / candHostSum + "," +
                         prefixCntMap.getOrDefault(thisHost, (long) 0) + "," +
-                        rule1Map.getOrDefault(thisHost, 0) + "," +
-                        rule2Map.getOrDefault(thisHost, 0) + "," +
+                        prefixCntMap.getOrDefault(thisHost, (long) 0) / candHostSum + "," +
+                        rule1Map.getOrDefault(thisHost, new Integer[]{0, 0})[0] + "," +
+                        rule1Map.getOrDefault(thisHost, new Integer[]{0, 0})[0] / freqPatterns + "," +
+                        rule1Map.getOrDefault(thisHost, new Integer[]{0, 0})[1] / candHostSum + "," +
+                        rule1Map.getOrDefault(thisHost, new Integer[]{0, 0})[1] / freqPatterns + "," +
+                        rule1Map.getOrDefault(thisHost, new Integer[]{0, 0})[1] / rule1Map.getOrDefault(thisHost, new Integer[]{1, 1})[0] + "," +
+                        rule2Map.getOrDefault(thisHost, new Integer[]{0, 0})[0] + "," +
+                        rule2Map.getOrDefault(thisHost, new Integer[]{0, 0})[0] / freqPatterns + "," +
+                        rule2Map.getOrDefault(thisHost, new Integer[]{0, 0})[1] / candHostSum + "," +
+                        rule2Map.getOrDefault(thisHost, new Integer[]{0, 0})[1] / freqPatterns + "," +
+                        rule2Map.getOrDefault(thisHost, new Integer[]{0, 0})[1] / rule2Map.getOrDefault(thisHost, new Integer[]{1, 1})[0] + "," +
+                        occHash.getOrDefault(thisHost, 0) + "," +
+                        occHash.getOrDefault(thisHost, 0) / (float) prefixCntMap.getOrDefault(thisHost, (long) candHostSum) + "," +
+                        disToYspMap.getOrDefault(thisHost, 0) / (float) prefixCntMap.getOrDefault(thisHost, (long) candHostSum) + "," +
                         minDistance(urlHost, thisHost) + "\r\n";
-                writer.write(thisHost + "," + thisHost.equals(referHost) + "," + value);
+                writer.write(thisHost + " " + thisHost.equals(referHost) + " " + value);
                 String hostKey = thisHost + "_FeatExtrac";
                 jedis.hset(urlHost, hostKey, value);
             }
@@ -123,6 +139,23 @@ public class FeatureGenerator {
         if (rule1Map.containsKey(referHost) || allHisMap.containsKey(referHost))
             return 1;
         else return 0;
+    }
+
+    /**
+     * 用于输出华严全部明文YSP的挖掘结果
+     */
+    private void featureSortWriter(String urlHost, String referHost, Writer writer, Jedis jedis,
+                                   Map<String, Integer> allHisMap, Map<String, Long> prefixCntMap,
+                                   Map<String, Integer> rule1Map, Map<String, Integer> rule2Map,
+                                   Map<String, Integer> occHash, Map<String, Integer> disToYspMap,
+                                   Set<String> candSet) throws IOException {
+        List<String> candList = new ArrayList<>(candSet);
+        candList.sort((o1, o2) ->
+                ((int)(allHisMap.getOrDefault(o2, 0) + prefixCntMap.getOrDefault(o2, 0L) + rule1Map.getOrDefault(o2, 0) - rule2Map.getOrDefault(o2, 0)) -
+                (int)(allHisMap.getOrDefault(o1, 0) + prefixCntMap.getOrDefault(o1, 0L) + rule1Map.getOrDefault(o1, 0) - rule2Map.getOrDefault(o1, 0))));
+        for (String thisHost : candList) {
+            writer.write(thisHost + "\r\n");
+        }
     }
 
     public int minDistance(String word1, String word2) {
@@ -154,22 +187,47 @@ public class FeatureGenerator {
         return dp[word1Len][word2Len];
     }
 
+    /**
+     * 计算一个上下文中的共现情况，一个时间一起出现的还有几个
+     */
+    private HashMap<Long, Integer> coOccurrence(List<TrafficLog> trafficLogList) {
+        HashMap<Long, Integer> occurrenceMap = new HashMap<>();
+        for (TrafficLog trafficLog : trafficLogList) {
+            Long time = trafficLog.getCommon_start_time();
+            if (time != 0) {
+                occurrenceMap.put(time, occurrenceMap.getOrDefault(time, -1) + 1);
+            }
+        }
+        return occurrenceMap;
+    }
+
     private void recallAndResort(String yspHost, String referHost, Writer writer, Jedis jedis, AVDataListMapper avListMapper) throws IOException {
         String likeUrl = '%' + yspHost + '%';
         List<AVlog> aVlogs = avListMapper.getHistoryHost(likeUrl, Configurations.getIntProperty(0, "rawLimit"));
-        logger.warn(String.format("%s过去曾出现过%d次", yspHost, aVlogs.size()));
+        float candHostSum = aVlogs.size();
+        logger.warn(String.format("%s过去曾出现过%f次", yspHost, candHostSum));
 
+        // 下面的几个Hash表其实key是一样的，是否应该合并一下呢
         // 统计历史总量的Hash表，用于召回
         HashMap<String, Integer> allHisMap = new HashMap<>();
         // 编辑距离的Hash表，用于召回
         HashMap<String, Integer> distanceHash = new HashMap<>();
+        // 计算共现的音视频
+        HashMap<String, Integer> occHash = new HashMap<>();
+        // 计算和YSP的距离
+        HashMap<String, Integer> disToYspMap = new HashMap<>();
 
         ArrayList<Row> data = new ArrayList<>();
         int historyCnt = aVlogs.size();
         int maxColSize = Math.min(historyCnt * Configurations.getIntProperty(0, "ratioRawCol"),
                 Configurations.getIntProperty(0, "colLimit"));
         int overflowCols = 0;
+        long prevTimeStamp = 0;
         for (AVlog eachLog: aVlogs) {
+            // 去除视频流量一样的case
+            if (prevTimeStamp == eachLog.getFound_time())
+                continue;
+            else prevTimeStamp = eachLog.getFound_time();
             List<TrafficLog> trafficLogList = avListMapper.getRelationListWithHost(eachLog.getFound_time(),
                     eachLog.getClient_ip(),
                     Configurations.getIntProperty(0, "intervalLeft"),
@@ -180,24 +238,33 @@ public class FeatureGenerator {
                     overflowCols += 1;
                 else {
                     List<List<String>> row = new ArrayList<>();
+                    // 每次排除第一次出现的ysp host
+                    int first = 1;
+                    int disOfYsp = 0;
+                    // 计算共现的音视频
+                    HashMap<Long, Integer> occurrenceMap = coOccurrence(trafficLogList);
+
                     for (TrafficLog trafficLog: trafficLogList) {
                         String oneItemHTTPHost = trafficLog.getHttp_host();
                         String oneItemSNI = trafficLog.getSsl_sni();
                         // logger.warn("HTTP: " + oneItemHTTPHost);
                         // logger.warn("SSL: " + oneItemSNI);
-                        if (oneItemSNI != null && oneItemSNI.length() > 0) {
-                            allHisMap.put(oneItemSNI, allHisMap.getOrDefault(oneItemSNI, 0) + 1);
-                            row.add(Arrays.asList(oneItemSNI));
-                            if (!distanceHash.containsKey(oneItemSNI)) {
-                                distanceHash.put(oneItemSNI, minDistance(yspHost, oneItemSNI));
+                        String host = oneItemSNI != null && oneItemSNI.length() > 0 ? oneItemSNI : oneItemHTTPHost;
+                        if (host != null) {
+                            if (first == 0)
+                                disOfYsp += 1;
+                            if (first == 1 && host.equals(yspHost)) {
+                                // 开始计算和YSP的距离
+                                first = 0;
+                                continue;
                             }
-                        }
-                        else if (oneItemHTTPHost != null && oneItemHTTPHost.length() > 0) {
-                            allHisMap.put(oneItemHTTPHost, allHisMap.getOrDefault(oneItemHTTPHost, 0) + 1);
-                            row.add(Arrays.asList(oneItemHTTPHost));
-                            if (!distanceHash.containsKey(oneItemHTTPHost)) {
-                                distanceHash.put(oneItemHTTPHost, minDistance(yspHost, oneItemHTTPHost));
+                            disToYspMap.put(host, disToYspMap.getOrDefault(host, 0) + disOfYsp);
+                            allHisMap.put(host, allHisMap.getOrDefault(host, 0) + 1);
+                            if (!distanceHash.containsKey(host)) {
+                                distanceHash.put(host, minDistance(yspHost, host));
                             }
+                            occHash.put(host, occurrenceMap.getOrDefault(trafficLog.getCommon_start_time(), 0));
+                            row.add(Arrays.asList(host));
                         }
                     }
                     data.add(RowFactory.create(row));
@@ -211,6 +278,10 @@ public class FeatureGenerator {
         }
 
         Set<String> candSet = recallCandidate(allHisMap, distanceHash);
+        float hisSum = 0;
+        for (String eachHost: candSet) {
+            hisSum += allHisMap.getOrDefault(eachHost, 0);
+        }
 
         logger.warn("数据构造完毕，开始序列挖掘");
         StructType schema = new StructType(new StructField[]{ new StructField(
@@ -226,14 +297,16 @@ public class FeatureGenerator {
         sequence.show(10, false);
 
         // 这里重写build candidate
-        HashMap<String, Integer> restFirstMap = new HashMap<>();
-        HashMap<String, Integer> restMap = new HashMap<>();
+        HashMap<String, Integer[]> restFirstMap = new HashMap<>();
+        HashMap<String, Integer[]> restMap = new HashMap<>();
 
         String candidateItem;
         HashMap<String, Long> prefixCntMap = new HashMap<>();
+        float freqPatterns = 0;
         for(Iterator<Row> iter = sequence.toLocalIterator(); iter.hasNext();) {
             Row each = iter.next();
             if (each.size() == 2) {
+                freqPatterns += 1;
                 try {
                     WrappedArray rawSequence = (WrappedArray)each.get(0);
                     WrappedArray firstItem = (WrappedArray)rawSequence.apply(0);
@@ -254,10 +327,18 @@ public class FeatureGenerator {
                     else {
                         // 非一项集
                         candidateItem =  (String)((WrappedArray)rawSequence.apply(0)).apply(0);
-                        restFirstMap.put(candidateItem, restFirstMap.getOrDefault(candidateItem, 0) + 1);
+                        int freq = ((Long) each.get(1)).intValue();
+                        //restFirstMap.put(candidateItem, restFirstMap.getOrDefault(candidateItem, 0) + 1);
+                        Integer[] prevArray = restFirstMap.getOrDefault(candidateItem, new Integer[]{0, 0});
+                        prevArray[0] += 1;
+                        prevArray[1] += freq;
+                        restFirstMap.put(candidateItem, prevArray);
                         for (int i = 1; i < rawSequence.size(); i++) {
                             candidateItem = (String)((WrappedArray)rawSequence.apply(i)).apply(0);
-                            restMap.put(candidateItem, restMap.getOrDefault(candidateItem, 0) + 1);
+                            Integer[] eachPrevArray = restMap.getOrDefault(candidateItem, new Integer[]{0, 0});
+                            eachPrevArray[0] += 1;
+                            eachPrevArray[1] += freq;
+                            restMap.put(candidateItem, eachPrevArray);
                         }
                     }
                 }
@@ -270,7 +351,9 @@ public class FeatureGenerator {
 
         jedis.hset(yspHost, "candSet", candSet.toString());
         // 接下来调用featureWrite并写到redis里面，featureWrite的0或者1不需要写入，因为redis中不会记录
-        featureWrite(yspHost, referHost, writer, jedis, allHisMap, prefixCntMap, restFirstMap, restMap, candSet);
+        featureWrite(yspHost, referHost, writer, jedis, allHisMap, prefixCntMap, restFirstMap, restMap, occHash,
+                disToYspMap, candSet, candHostSum, hisSum, freqPatterns);
+        //featureSortWriter(yspHost, referHost, writer, jedis, allHisMap, prefixCntMap, restFirstMap, restMap, occHash, disToYspMap, candSet);
     }
 
     /**
@@ -300,7 +383,7 @@ public class FeatureGenerator {
     }
 
     public void refreshCache() {
-        logger.warn("清除Cache");
+        logger.warn("清除Cache...");
         Jedis jedis = JedisPoolUtils.getJedis();
         assert jedis != null;
         Set<String> cacheKeys = jedis.keys("*");
@@ -310,11 +393,40 @@ public class FeatureGenerator {
         JedisPoolUtils.returnResource(jedis);
     }
 
+    /**
+     * 从华严明文音视频处进行数据挖掘，不论是否有ref
+     * 保存rule1的结果顺序，添加其他规则召回的结果，并添加特征
+     */
+    public void GetYspCandNoRef() {
+        // 首先获得所有符合条件的YSP，用SQL保证唯一
+        try(SqlSession sqlSession = SqlSessionFactoryUtils.getSqlSessionFactory().openSession();
+            Writer writer = new OutputStreamWriter(new FileOutputStream("HuaYspSort.txt"), "UTF-8")) {
+            AVDataListMapper avListMapper = sqlSession.getMapper(AVDataListMapper.class);
+            Jedis jedis = JedisPoolUtils.getJedis();
+            List<AVlog> yspSet = avListMapper.getUniqAVListForAll();
+
+            // 拿到经过处理后的url以此进行序列挖掘
+            for(AVlog yspLog: yspSet) {
+                String yspHost = yspLog.getUrl();
+                if (yspHost.length() == 0)
+                    continue;
+                writer.write("-----------------------------------------------------------------------------------\r\n");
+                writer.write("*" + " " + yspHost + "\r\n");
+                System.out.println(yspHost);
+                recallAndResort(yspHost, "", writer, jedis, avListMapper);
+                writer.write("-----------------------------------------------------------------------------------\r\n");
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
 
     public static void main(String[] args) {
         FeatureGenerator featureGenerator = new FeatureGenerator();
         logger.warn("特征生成任务开始...");
         featureGenerator.refreshCache();
+        //featureGenerator.GetYspCandNoRef();
         featureGenerator.featureExtracFromFile();
     }
 

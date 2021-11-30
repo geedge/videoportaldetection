@@ -6,7 +6,6 @@ import cn.ac.iie.Utils.URLHandleUtils;
 import cn.ac.iie.pojo.TrafficLog;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
-import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;
@@ -256,23 +255,6 @@ public class EffectEvaluation {
         }
     }
 
-    @Test
-    public void grammarTest() {
-        HashMap<String, Integer[]> map = new HashMap<>();
-        Integer[] testA = new Integer[]{0,0,0};
-        map.put("testa", testA);
-        Integer[] arraya = map.get("testa");
-        arraya[1] += 1;
-        for (Integer each: map.get("testa")) {
-            System.out.println(each);
-        }
-        System.out.format("%8s%8d%8s%n", "string1", 1, "string2");
-        System.out.format("%12s%12s%12s%12s%12s%12s%12s%n", "方式", "出现次数", "不出现次数", "平均Index", "第1次出现占比", "前5次出现占比", "前10次出现占比");
-        System.out.format("%12s%12d%12d%12f%12f%12f%12f%n",
-                "key", 0, 1, 1.1, 1.2, 1.3, 1.4);
-        File f = new File(this.getClass().getResource("").getPath());
-        System.out.println(f);
-    }
 
     public static void main(String[] args) {
         EffectEvaluation effectEvaluation = new EffectEvaluation();
