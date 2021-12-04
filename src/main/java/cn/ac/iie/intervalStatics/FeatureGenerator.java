@@ -456,7 +456,8 @@ public class FeatureGenerator {
                 else {
                     String[] candSetArray = candSet.substring(1, candSet.length() - 1).split(", ");
                     for (String eachHost: candSetArray) {
-                        writer.write(eachHost + "\r\n");
+                        if (eachHost.length() > 0)
+                            writer.write(eachHost + "\r\n");
                     }
                 }
                 writer.write("-----------------------------------------------------------------------------------\r\n");
@@ -470,10 +471,23 @@ public class FeatureGenerator {
 
     public static void main(String[] args) {
         FeatureGenerator featureGenerator = new FeatureGenerator();
-        logger.warn("特征生成任务开始...");
-       // featureGenerator.refreshCache("candSet");
-       //  featureGenerator.GetYspCandNoRef();
-       featureGenerator.featureExtracFromFile("testSetALL.txt");
+        logger.warn("任务开始...");
+        // featureGenerator.refreshCache("candSet");
+        if (args.length == 0 || args[0].equals("feature_generate")) {
+            if (args.length == 2 && args[1].startsWith("refresh"))
+                featureGenerator.refreshCache("candSet");
+            logger.warn("开始从 testSetALL.txt 生产新特征");
+            featureGenerator.featureExtracFromFile("testSetALL.txt");
+        }
+        else if (args[0].startsWith("getALLHua")) {
+            if (args.length == 2 && args[1].startsWith("refresh"))
+                featureGenerator.refreshCache("candiSortedSet");
+            logger.warn("开始生成华严所有音视频的挖掘结果");
+            featureGenerator.GetYspCandNoRef();
+        }
+        else {
+            logger.error("该任务不存在...");
+        }
     }
 
 }
