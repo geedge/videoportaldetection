@@ -23,6 +23,7 @@ import scala.collection.mutable.WrappedArray;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import static org.apache.spark.sql.functions.*;
 
 public class FeatureGenerator {
     static {
@@ -39,12 +40,12 @@ public class FeatureGenerator {
      * 评估方式：Index avg 和 Prep pos=1
      * 输出结果：每一个ysp host的向量彼此间隔，其下每一行的格式为[host, true/false, 特征向量]
      */
-    public void featureExtracFromFile() {
-        try (InputStream is = this.getClass().getClassLoader().getResourceAsStream("testSet.txt");
-             Writer writer = new OutputStreamWriter(new FileOutputStream("feature.txt"), "UTF-8");
+    public void featureExtracFromFile(String fileName) {
+        try (InputStream is = this.getClass().getClassLoader().getResourceAsStream(fileName);
+             Writer writer = new OutputStreamWriter(new FileOutputStream("feature.txt"), StandardCharsets.UTF_8);
              SqlSession sqlSession = SqlSessionFactoryUtils.getSqlSessionFactory().openSession()) {
             if (is == null) {
-                System.out.println("文件不存在");
+                logger.error(String.format("%s 不存在", fileName));
                 System.exit(0);
             }
             AVDataListMapper avListMapper = sqlSession.getMapper(AVDataListMapper.class);
@@ -60,7 +61,7 @@ public class FeatureGenerator {
 
                 // 先计算每一个候选集，然后判断当前host在哪个位置
                 // 用特征结果来表示redis的key，结尾加一个FeatExtrac后缀
-                if (jedis != null && jedis.exists(yspHost) && !yspHost.startsWith("200.200.200.200")) {
+                if (jedis != null && !yspHost.startsWith("200.200.200.200")) {
                     // 因为之前写入的redis的都是符合条件的，所以这里可以用缓存来判断
                     // 如果单独运行的话，这里其实需要进行一次
                     writer.write(yspHost + " " + refererHost + "\r\n");
@@ -70,17 +71,17 @@ public class FeatureGenerator {
                         recallAndResort(yspHost, refererHost, writer, jedis, avListMapper, 1);
                     }
                     else {
-                        logger.warn(String.format("%s在Cache中存在", yspHost));
+                        logger.warn(String.format("%s 在 Cache 中存在", yspHost));
                         String[] candSetArray = candSet.substring(1, candSet.length() - 1).split(", ");
                         for (String eachHost: candSetArray) {
                             String hostKey = eachHost + "_FeatExtrac";
                             String cacheLine = jedis.hget(yspHost, hostKey);
-                            if (cacheLine == null) {
-                                logger.error("candSet cache存在而某条feature cache不存在！");
+                            if (cacheLine == null && eachHost.length() > 0) {
+                                logger.error(String.format("candSet cache 存在而 %s 不存在！", hostKey));
                                 continue;
                             }
                             // 注意cacheLine的格式
-                            writer.write(eachHost + "," + eachHost.equals(refererHost) + "," + cacheLine);
+                            writer.write(eachHost + " " + eachHost.equals(refererHost) + " " + cacheLine);
                         }
                     }
                 }
@@ -99,16 +100,16 @@ public class FeatureGenerator {
      * 把每一行写入训练数据中。这里为了防止host特别多，设置写入的训练数据必须在两个候选集中出现。
      * 如果refer没有在两个候选集中出现，那么返回0，否则返回1
      * @param writer
+     * @param allHisMap 全统计的Map，value是出现次数，注意allHisMap可能会非常大
      * @param rule1Map 一项集的Map，value为次数
      * @param rule2Map 规则2的Map，value也是在后面（非首部）出现了多少次
-     * @param allHisMap 全统计的Map，value是出现次数，注意allHisMap可能会非常大
      * @param candSet 当然是候选集啦～
      */
-    private int featureWrite(String yspHost, String referHost, Writer writer, Jedis jedis,
-                             Map<String, Integer> allHisMap, Map<String, Long> prefixCntMap,
-                             Map<String, Integer[]> rule1Map, Map<String, Integer[]> rule2Map,
-                             Map<String, Integer> occHash, Map<String, Integer> disToYspMap,
-                             Set<String> candSet, float candHostSum, float hisSum, float freqPatterns) throws IOException {
+    private void featureWrite(String yspHost, String referHost, Writer writer, Jedis jedis,
+                              Map<String, Integer> allHisMap, Map<String, Long> prefixCntMap,
+                              Map<String, Integer[]> rule1Map, Map<String, Integer[]> rule2Map,
+                              Map<String, Integer> occHash, Map<String, Integer> disToYspMap,
+                              Set<String> candSet, float candHostSum, float hisSum, float freqPatterns) throws IOException {
         jedis.hset(yspHost, "candSet", candSet.toString());
         for (String thisHost : candSet) {
             if ((rule1Map.containsKey(thisHost) || allHisMap.containsKey(thisHost)) && thisHost.length() > 0) {
@@ -138,9 +139,6 @@ public class FeatureGenerator {
             }
         }
 
-        if (rule1Map.containsKey(referHost) || allHisMap.containsKey(referHost))
-            return 1;
-        else return 0;
     }
 
     /**
@@ -158,7 +156,7 @@ public class FeatureGenerator {
                 (int)(allHisMap.getOrDefault(o1, 0) + prefixCntMap.getOrDefault(o1, 0L) +
                         rule1Map.getOrDefault(o1, new Integer[]{0, 0})[0] -
                         rule2Map.getOrDefault(o1, new Integer[]{0, 0})[0])));
-        jedis.hset(yspHost, "candSortedSet", candList.toString());
+        jedis.hset(yspHost, "candiSortedSet", candList.toString());
         for (String thisHost : candList) {
             writer.write(thisHost + "\r\n");
         }
@@ -211,7 +209,11 @@ public class FeatureGenerator {
         String likeUrl = '%' + yspHost + '%';
         List<AVlog> aVlogs = avListMapper.getHistoryHost(likeUrl, Configurations.getIntProperty(0, "rawLimit"));
         float candHostSum = aVlogs.size();
-        logger.warn(String.format("%s过去曾出现过%f次", yspHost, candHostSum));
+        if (candHostSum < Configurations.getIntProperty(0, "leastHistoryNum")) {
+            logger.warn(String.format("%s 过去曾出现过 %f 次，不符合 Mining 条件", yspHost, candHostSum));
+            return;
+        }
+        else logger.warn(String.format("%s 过去曾出现过 %f 次", yspHost, candHostSum));
 
         // 下面的几个Hash表其实key是一样的，是否应该合并一下呢
         // 统计历史总量的Hash表，用于召回
@@ -280,7 +282,7 @@ public class FeatureGenerator {
 
         int minMiNum = Configurations.getIntProperty(0, "leastHistoryNum");
         if (historyCnt - overflowCols < minMiNum || data.size() < minMiNum) {
-            logger.warn("不满足mining条件");
+            logger.warn("不满足 Mining 条件");
             return;
         }
 
@@ -296,12 +298,13 @@ public class FeatureGenerator {
                 false, Metadata.empty())
         });
         Dataset<Row> sequenceDF = SparkFactoryUtils.getSparkSessionFactory().createDataFrame(data, schema);
-        sequenceDF.show(20, true);
-        //sequenceDF.show(50, false);
-        PrefixSpan prefixSpan = new PrefixSpan().setMinSupport(Configurations.getDoubleProperty(0, "prefixConfidence")).setMaxPatternLength(5);
+        // sequenceDF.show(20, true);
+        PrefixSpan prefixSpan = new PrefixSpan()
+                .setMinSupport(Configurations.getDoubleProperty(0, "prefixConfidence"))
+                .setMaxPatternLength(Configurations.getIntProperty(0, "prefixMaxPatternLength"));
         // Finding frequent sequential patterns
         Dataset<Row> sequence = prefixSpan.findFrequentSequentialPatterns(sequenceDF);
-        sequence.show(10, false);
+        // sequence.show(10, false);
 
         // 这里重写build candidate
         HashMap<String, Integer[]> restFirstMap = new HashMap<>();
@@ -310,11 +313,29 @@ public class FeatureGenerator {
         String candidateItem;
         HashMap<String, Long> prefixCntMap = new HashMap<>();
         float freqPatterns = 0;
-        for(Iterator<Row> iter = sequence.toLocalIterator(); iter.hasNext();) {
+        // Iterator<Row> iter = sequence.toLocalIterator();
+        Dataset<Row> sequenceSorted = sequence.sort(col("freq").desc());
+
+        // TODO: 该用take前n个进行处理，防止内存溢出
+        // List<Row> out = sequenceSorted.takeAsList(100);
+        // for (Row row: out) {
+        //     System.out.println(row.get(0));
+        //     System.out.println(row.getStruct(0));
+        //     System.out.println(row.apply(0));
+        //     System.out.println(row.apply(1));                           // freq
+        //     System.out.println(row.get(1));
+        //     System.out.println(row.toString());
+        // }
+        // System.exit(1);
+
+        Iterator<Row> iter = sequenceSorted.toLocalIterator();
+        logger.warn("序列挖掘成功!");
+        while(iter.hasNext()) {
             Row each = iter.next();
             if (each.size() == 2) {
                 freqPatterns += 1;
                 try {
+                    // 下面的警告不重要，看不顺眼就把泛型补全
                     WrappedArray rawSequence = (WrappedArray)each.get(0);
                     WrappedArray firstItem = (WrappedArray)rawSequence.apply(0);
                     if (rawSequence.size() == 1) {
@@ -392,13 +413,16 @@ public class FeatureGenerator {
         return candSet;
     }
 
-    public void refreshCache() {
+    /**
+     * @param fields candSet candiSortedSet
+     */
+    public void refreshCache(String... fields) {
         logger.warn("清除Cache...");
         Jedis jedis = JedisPoolUtils.getJedis();
         assert jedis != null;
         Set<String> cacheKeys = jedis.keys("*");
         for (String key: cacheKeys) {
-            jedis.hdel(key, "candSet", "candSortedSet");
+            jedis.hdel(key, fields);
         }
         JedisPoolUtils.returnResource(jedis);
     }
@@ -416,15 +440,16 @@ public class FeatureGenerator {
             List<AVlog> yspSet = avListMapper.getUniqAVListForAll();
 
             // 拿到经过处理后的url以此进行序列挖掘
+            int cnt = 1;
             for(AVlog yspLog: yspSet) {
                 String yspHost = yspLog.getUrl();
                 if (yspHost.length() == 0)
                     continue;
                 writer.write("-----------------------------------------------------------------------------------\r\n");
                 writer.write("*" + " " + yspHost + "\r\n");
-                System.out.println(yspHost);
+                logger.warn(String.format("当前处理 %s，已处理 %d 条", yspHost, cnt));
                 assert jedis != null;
-                String candSet = jedis.hget(yspHost, "candSortedSet");
+                String candSet = jedis.hget(yspHost, "candiSortedSet");
                 if (candSet == null) {
                     recallAndResort(yspHost, "", writer, jedis, avListMapper, 2);
                 }
@@ -435,6 +460,7 @@ public class FeatureGenerator {
                     }
                 }
                 writer.write("-----------------------------------------------------------------------------------\r\n");
+                cnt += 1;
             }
         } catch (IOException e) {
             e.printStackTrace();
@@ -445,9 +471,9 @@ public class FeatureGenerator {
     public static void main(String[] args) {
         FeatureGenerator featureGenerator = new FeatureGenerator();
         logger.warn("特征生成任务开始...");
-       featureGenerator.refreshCache();
-        featureGenerator.GetYspCandNoRef();
-//        featureGenerator.featureExtracFromFile();
+       // featureGenerator.refreshCache("candSet");
+       //  featureGenerator.GetYspCandNoRef();
+       featureGenerator.featureExtracFromFile("testSetALL.txt");
     }
 
 }

@@ -53,7 +53,7 @@ public class prefixSpark {
 
         // Finding frequent sequential patterns
         Dataset<Row> sequence = prefixSpan.findFrequentSequentialPatterns(sequenceDF);
-        sequence.show();
+        sequence.show(100, false);
         // $example off$
         //List<String> listOne = sequence.as(Encoders.STRING()).collectAsList();
         //System.out.println(listOne);

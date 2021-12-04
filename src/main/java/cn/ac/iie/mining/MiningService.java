@@ -288,7 +288,9 @@ public class MiningService {
         Dataset<Row> sequenceDF = SparkFactoryUtils.getSparkSessionFactory().createDataFrame(data, schema);
         sequenceDF.show(20, false);
         //sequenceDF.show(50, false);
-        PrefixSpan prefixSpan = new PrefixSpan().setMinSupport(Configurations.getDoubleProperty(0, "prefixConfidence")).setMaxPatternLength(5);
+        PrefixSpan prefixSpan = new PrefixSpan()
+                .setMinSupport(Configurations.getDoubleProperty(0, "prefixConfidence"))
+                .setMaxPatternLength(Configurations.getIntProperty(0, "prefixMaxPatternLength"));
 
         // Finding frequent sequential patterns
         Dataset<Row> sequence = prefixSpan.findFrequentSequentialPatterns(sequenceDF);
@@ -363,7 +365,6 @@ public class MiningService {
      * 直接用一项集的话，结果和统计是没差的，其实入口更倾向于出现在多项集的首部，而不是一项集
      * 规则1：入口更倾向于出现在多项集的首部 -> 统计candidate出现在多项集首部的次数
      * 规则2：入口更不倾向于出现在无序集中 -> 统计candidate出现在不是首部的比例（这一点目前来看不一定是好的，因为很多大站很可能就在后面会出现呀～）
-     * TODO: 这里排序的实现需要改进，用排序序列的方法直接忽略了数值的关系，损失了部分特征，后续可以考虑用learning to rank的方法
      *
      * @param candidateList 一项集
      * @param restMap 多项集

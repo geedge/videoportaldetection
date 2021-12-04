@@ -13,11 +13,55 @@ public class URLHandleUtils {
         else return yspHost;
     }
 
+    /**
+     * Node：有时候会出现182.254.52.218/amobile.music.tc.qq.com这样的形式，需要特殊处理
+     * @param url 完整的url地址
+     * @return 作为数据挖掘的host
+     */
     public static String getFirstURLPath(String url) {
         String[] yspHostList = url.split("/");
-        if (yspHostList.length >= 1)
-            return yspHostList[0];
-        else return url;
+        if (yspHostList.length >= 2) {
+            if (isCorrectIp(yspHostList[0]) && isDomainCrude(yspHostList[1]))
+                return yspHostList[1];
+            else {
+                return yspHostList[0];
+            }
+        }
+        return url;
+    }
+
+    public static boolean isCorrectIp(String ipString) {
+        String ipRegex = "\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}";	//IP地址的正则表达式
+        //如果前三项判断都满足，就判断每段数字是否都位于0-255之间
+        if (ipString.matches(ipRegex)) {
+            String[] ipArray = ipString.split("\\.");
+            for (int i = 0; i < ipArray.length; i++) {
+                int number = Integer.parseInt(ipArray[i]);
+                //4.判断每段数字是否都在0-255之间
+                if (number <0||number>255) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        else {
+            return false;	//如果与正则表达式不匹配，则返回false
+        }
+    }
+
+    private static boolean isDomainCrude(String isString) {
+        String[] strSpl = isString.split("\\.");
+        if (strSpl.length == 1)
+            return false;
+        char[] chars = strSpl[strSpl.length - 1].toCharArray();
+        boolean isPhontic;
+        for (char aChar : chars) {
+            isPhontic = (aChar >= 'a' && aChar <= 'z') || (aChar >= 'A' && aChar <= 'Z');
+            if (!isPhontic) {
+                return false;
+            }
+        }
+        return true;
     }
 
     public static String handleSNI(String thisHost) {

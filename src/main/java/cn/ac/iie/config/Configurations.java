@@ -1,17 +1,20 @@
 package cn.ac.iie.config;
 
-import java.io.FileNotFoundException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.Properties;
 
 public class Configurations {
     private static Properties propCommon = new Properties();
+    private static Logger logger = LoggerFactory.getLogger(Configurations.class);
 
     static {
         try {
             propCommon.load(Configurations.class.getClassLoader().getResourceAsStream("video_data.properties"));
-            System.out.println("配置文件video_data.properties加载成功");
+            logger.warn("配置文件video_data.properties加载成功");
         } catch (Exception e) {
             propCommon = null;
             System.err.println("配置加载失败");

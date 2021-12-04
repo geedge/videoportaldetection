@@ -18,7 +18,7 @@ public class SparkFactoryUtils {
         ;
         spark = SparkSession
                 .builder()
-                //.master("local[*]")
+                // .master("local[*]")
                 .config(conf)
                 .getOrCreate();
         SparkContext sc = spark.sparkContext();

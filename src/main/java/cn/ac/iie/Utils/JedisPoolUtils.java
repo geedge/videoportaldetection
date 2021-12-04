@@ -71,10 +71,9 @@ public class JedisPoolUtils {
     public synchronized static Jedis getJedis() {
         try {
             if (jedisPool == null) {
-                JedisPool jedisPool = JedisPoolUtils.getJedisPoolInstance();
+                jedisPool = JedisPoolUtils.getJedisPoolInstance();
             }
-            Jedis resource = jedisPool.getResource();
-            return resource;
+            return jedisPool.getResource();
         } catch (Exception e) {
             e.printStackTrace();
             return null;
