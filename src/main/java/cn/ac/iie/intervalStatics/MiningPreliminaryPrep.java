@@ -114,6 +114,7 @@ public class MiningPreliminaryPrep {
         long stime = System.currentTimeMillis();
         MiningPreliminaryPrep miningPreliminaryPrep = new MiningPreliminaryPrep();
         miningPreliminaryPrep.generateTrainSet("ALL");
+        // miningPreliminaryPrep.getHTTPTimeWindows();
         // 结束时间
         long etime = System.currentTimeMillis();
         System.out.printf("执行时长：%f 分钟.", (etime - stime) / 60000.0);

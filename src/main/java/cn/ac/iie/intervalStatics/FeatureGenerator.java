@@ -112,6 +112,7 @@ public class FeatureGenerator {
                               Set<String> candSet, float candHostSum, float hisSum, float freqPatterns) throws IOException {
         jedis.hset(yspHost, "candSet", candSet.toString());
         for (String thisHost : candSet) {
+            thisHost = thisHost.trim();
             if ((rule1Map.containsKey(thisHost) || allHisMap.containsKey(thisHost)) && thisHost.length() > 0) {
                 // 注意这里默认为0，但是就语义而言，rule2的为0是最好的，不过暂时还是设置为0吧
                 String value = allHisMap.getOrDefault(thisHost, 0) + "," +

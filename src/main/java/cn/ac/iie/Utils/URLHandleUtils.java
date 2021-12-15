@@ -15,6 +15,7 @@ public class URLHandleUtils {
 
     /**
      * Node：有时候会出现182.254.52.218/amobile.music.tc.qq.com这样的形式，需要特殊处理
+     * 后面发现182.254.52.218/amobile.music.tc.qq.com对应的入口完全不同，会根据前面的IP而变化
      * @param url 完整的url地址
      * @return 作为数据挖掘的host
      */
@@ -22,7 +23,8 @@ public class URLHandleUtils {
         String[] yspHostList = url.split("/");
         if (yspHostList.length >= 2) {
             if (isCorrectIp(yspHostList[0]) && isDomainCrude(yspHostList[1]))
-                return yspHostList[1];
+                // return yspHostList[1];
+                return yspHostList[0] + "/" + yspHostList[1];
             else {
                 return yspHostList[0];
             }
