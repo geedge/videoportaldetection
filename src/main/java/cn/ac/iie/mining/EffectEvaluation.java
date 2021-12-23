@@ -65,13 +65,14 @@ public class EffectEvaluation {
                     case 1:
                         validateYspCnt += 1;
                         validateYspSum += resultIndex[resultIndex.length - 1];
-                        accumulateResult(evaluateMap, "statistic", resultIndex[1]);
-                        accumulateResult(evaluateMap, "rule1", resultIndex[2]);
-                        accumulateResult(evaluateMap, "sta_rule1", resultIndex[3]);
-                        accumulateResult(evaluateMap, "rule2", resultIndex[4]);
-                        accumulateResult(evaluateMap, "sta_rule1_rule2", resultIndex[5]);
-                        accumulateResult(evaluateMap, "statistics_all", resultIndex[6]);
-                        if (resultIndex[6] == -1) cantFindList.add(yspHost);
+                        accumulateResult(evaluateMap, "statistics_all", resultIndex[1]);
+                        accumulateResult(evaluateMap, "statistic", resultIndex[2]);
+                        accumulateResult(evaluateMap, "rule1", resultIndex[3]);
+                        accumulateResult(evaluateMap, "sta_rule1", resultIndex[4]);
+                        accumulateResult(evaluateMap, "rule2", resultIndex[5]);
+                        accumulateResult(evaluateMap, "sta_rule1_rule2", resultIndex[6]);
+                        accumulateResult(evaluateMap, "muti_prefix_rule1", resultIndex[7]);
+                        if (resultIndex[3] == -1) cantFindList.add(yspHost);
                         if (yspHost.startsWith("200.200.200.200")) cnt200 += 1;
                         break;
                     // 防止OOM，仅采用统计
@@ -121,9 +122,10 @@ public class EffectEvaluation {
             String rule2Candidate = jedis.hget(yspHost, "rule2");
             String prefixCandidate = jedis.hget(yspHost, "sta_rule1_rule2");
             String cntAllCandidate = jedis.hget(yspHost, "statistics_all");
+            String mutiRule1Candidate = jedis.hget(yspHost, "muti_prefix_rule1");
             if (prefixCandidate == null || statisticCandidate == null ||
                     rule1Candidate == null || staRule1Candidate == null ||
-                    rule2Candidate == null || cntAllCandidate == null) {
+                    rule2Candidate == null || cntAllCandidate == null || mutiRule1Candidate == null) {
                 // 此时计算
                 logger.warn("redis缓存不全");
                 int[] resultIndex = mining2Evaluate(yspHost, refererHost, miningService, jedis);
@@ -136,12 +138,13 @@ public class EffectEvaluation {
                 // 此时从redisCandidate中判断
                 return new int[]{
                         1,
+                        judgeIndex(cntAllCandidate, refererHost),
                         judgeIndex(statisticCandidate, refererHost),
                         judgeIndex(rule1Candidate, refererHost),
                         judgeIndex(staRule1Candidate, refererHost),
                         judgeIndex(rule2Candidate, refererHost),
                         judgeIndex(prefixCandidate, refererHost),
-                        judgeIndex(cntAllCandidate, refererHost),
+                        judgeIndex(mutiRule1Candidate, refererHost),
                         statisticCandidate.split(", ").length
                 };
             }
@@ -149,7 +152,7 @@ public class EffectEvaluation {
         else {
             if (!miningService.isMore10(yspHost)) {
                 logger.warn(String.format("%s数据过少，不需要进行挖掘", yspHost));
-                return new int[]{-1, -1, -1, -1, -1, -1, -1, -1};
+                return new int[]{-1, -1, -1, -1, -1, -1, -1, -1, -1};
             }
             int[] resultIndex = mining2Evaluate(yspHost, refererHost, miningService, jedis);
             JedisPoolUtils.returnResource(jedis);
@@ -163,23 +166,18 @@ public class EffectEvaluation {
      * @return 按照规则得到的序列
      */
     private int[] mining2Evaluate(String yspHost, String refererHost, MiningService miningService, Jedis jedis) {
-        List<List<TrafficLog>> sawContext = new ArrayList<>();
-        int handleWay = miningService.inputMemChecker(yspHost, sawContext);
-        String allHisCandidate = miningService.getAllHisList(sawContext, yspHost);
-        if (handleWay == 1) {
-            ArrayList<Row> data = miningService.buildInput(sawContext);
-            logger.warn("数据构造完毕，开始序列挖掘");
-            Dataset<Row> sequence = miningService.relateHostMiningTask(data);
+        List<String> candidateList = miningService.mutiPrefixSpan(yspHost, true);
+        if (candidateList != null) {
             logger.warn("mining结束，写回Redis");
-            List<String> candidateList = miningService.miningCandidate(sequence);
             if (jedis != null) {
                 jedis.hset(yspHost, "write_time", String.valueOf(System.currentTimeMillis()/1000L));
-                jedis.hset(yspHost, "statistic", candidateList.get(0));
-                jedis.hset(yspHost, "rule1", candidateList.get(1));
-                jedis.hset(yspHost, "sta_rule1", candidateList.get(2));
-                jedis.hset(yspHost, "rule2", candidateList.get(3));
-                jedis.hset(yspHost, "sta_rule1_rule2", candidateList.get(4));
-                jedis.hset(yspHost, "statistics_all", allHisCandidate);
+                jedis.hset(yspHost, "statistics_all", candidateList.get(0));
+                jedis.hset(yspHost, "statistic", candidateList.get(1));
+                jedis.hset(yspHost, "rule1", candidateList.get(2));
+                jedis.hset(yspHost, "sta_rule1", candidateList.get(3));
+                jedis.hset(yspHost, "rule2", candidateList.get(4));
+                jedis.hset(yspHost, "sta_rule1_rule2", candidateList.get(5));
+                jedis.hset(yspHost, "muti_prefix_rule1", candidateList.get(6));
             }
             return new int[]{
                     1,
@@ -188,13 +186,14 @@ public class EffectEvaluation {
                     judgeIndex(candidateList.get(2), refererHost),
                     judgeIndex(candidateList.get(3), refererHost),
                     judgeIndex(candidateList.get(4), refererHost),
-                    judgeIndex(allHisCandidate, refererHost),
-                    candidateList.get(0).split(", ").length
+                    judgeIndex(candidateList.get(5), refererHost),
+                    judgeIndex(candidateList.get(6), refererHost),
+                    candidateList.get(1).split(", ").length
             };
         }
         else {
             logger.error(String.format("对%s进行挖掘容易造成堆内存溢出，暂不处理", yspHost));
-            return new int[]{0, -1, -1, -1, -1, -1, judgeIndex(allHisCandidate, refererHost), -1};
+            return new int[]{-1, -1, -1, -1, -1, -1, -1, -1, -1};
         }
     }
 
@@ -293,7 +292,24 @@ public class EffectEvaluation {
 
     @Test
     public void testGrammar() {
-        System.out.format("%18s%18.2f", 'a', 15.8888);
+        List<String> candidateList = new ArrayList<>();
+        candidateList.add("[a, b, c]");
+        candidateList.add("[a, b, c]");
+        candidateList.add("[a, b, c]");
+        List<String> candidateList2 = new ArrayList<>();
+        candidateList2.add("[d, e, f]");
+        candidateList2.add("[d, e, f]");
+        candidateList2.add("[d, e, f]");
+        for (int i = 1; i < candidateList.size(); i++) {
+            String oldCandi = candidateList.get(i);
+            String leftPart = oldCandi.substring(0, oldCandi.length()-1);
+            String rightPart = candidateList2.get(i).substring(1);
+            String newCandi = leftPart.concat(", ").concat(rightPart);
+            candidateList.set(i, newCandi);
+        }
+        for (String each: candidateList) {
+            System.out.println(each);
+        }
     }
 
 

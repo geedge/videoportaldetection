@@ -119,23 +119,79 @@ public class MiningService {
         }
     }
 
+    public List<String> mutiPrefixSpan(String yspHost, Boolean mutiTag) {
+        List<List<TrafficLog>> sawContext = new ArrayList<>();
+        int handleWay = inputMemChecker(yspHost, sawContext);
+        if (handleWay != 1) {
+            // 此时使用prefixSpan会造成OOM，该条舍去
+            return null;
+        }
+        ArrayList<Row> data = buildInput(sawContext);
+        logger.warn("数据构造完毕，开始序列挖掘");
+        // 调用spark模块
+        Dataset<Row> sequence = relateHostMiningTask(data);
+        List<String> candidateList = miningCandidate(sequence);
+        String allHisCandidate = getAllHisList(sawContext, yspHost);
+        candidateList.add(0, allHisCandidate);
+        if (!mutiTag) return candidateList;
+
+        /*
+         * muti部分
+         * 这里存在两个性能不必要的损耗点：
+         * 1.取最频繁一项的部分会带来性能的些微损失从candidate的String类型构建
+         * 2.从最开始的sawContext构建，还需要重新构建spark需求的格式
+         * 这里还有两个权宜之计：
+         * 1.只用了频繁1序列去做对比
+         * 2.最多再迭代一次
+         * 之所以这样写是因为，方面，简洁，易懂，并且目前不需要时间复杂度的极限要求
+         */
+        List<List<TrafficLog>> restSawContext = new ArrayList<>();
+        String rule1candi = candidateList.get(2);
+        String maybePortal = rule1candi.substring(1, rule1candi.length()-1).split(", ")[0];
+        for (List<TrafficLog> eachContext: sawContext) {
+            boolean hasTag = false;
+            for (TrafficLog eachLog: eachContext) {
+                String oneItemHTTPHost = eachLog.getHttp_host();
+                String oneItemSNI = eachLog.getSsl_sni();
+                if (oneItemHTTPHost.equals(maybePortal) || oneItemSNI.equals(maybePortal)) {
+                    hasTag = true;
+                    break;
+                }
+            }
+            if (!hasTag) {
+                restSawContext.add(eachContext);
+            }
+        }
+
+        if (restSawContext.size() < Configurations.getIntProperty(0, "leastHistoryNum")) {
+            // 虽然mutiTag为true，但是无法进一步挖掘，退化为rule1
+            logger.warn("不符合muti的条件，剩余上下文数量过少");
+            candidateList.add(candidateList.get(2));
+            return candidateList;
+        }
+        ArrayList<Row> data2 = buildInput(restSawContext);
+        logger.warn("muti数据构造完毕，开始序列挖掘");
+        // 调用spark模块
+        Dataset<Row> sequence2 = relateHostMiningTask(data2);
+        List<String> candidateList2 = miningCandidate(sequence2);
+        // 拼接一下，特别要注意这里candidateList第2个是rule1，candidateList2第1个是rule1
+        String oldCandi = candidateList.get(2);
+        String leftPart = oldCandi.substring(0, oldCandi.length()-1);
+        String rightPart = candidateList2.get(1).substring(1);
+        String newCandi = leftPart.concat(", ").concat(rightPart);
+        candidateList.add(newCandi);
+        return candidateList;
+    }
+
     public void miningProcess(String urlHost) {
         if (!judgeKeyCache(urlHost)) {
             logger.warn(String.format("%s cache不存在", urlHost));
         }
 
-        List<List<TrafficLog>> sawContext = new ArrayList<>();
-        int handleWay = inputMemChecker(urlHost, sawContext);
-        if (handleWay == 1) {
-            ArrayList<Row> data = buildInput(sawContext);
-            logger.warn("数据构造完毕，开始序列挖掘");
-            // 调用spark模块
-            Dataset<Row> sequence = relateHostMiningTask(data);
+        List<String> candidateList = mutiPrefixSpan(urlHost, false);
 
+        if (candidateList != null) {
             logger.warn("mining结束，写回Redis");
-            // 写回redis，如果redis中存在过期记录则覆盖
-            List<String> candidateList = miningCandidate(sequence);
-
             jedis.hset(urlHost, "write_time", String.valueOf(System.currentTimeMillis()/1000L));
             Integer candidateSize = Configurations.getIntProperty(0, "candidateSize");
             if (candidateSize != null && candidateSize > 0) {
@@ -149,9 +205,8 @@ public class MiningService {
             }
             else jedis.hset(urlHost, "candidate", candidateList.get(candidateList.size()-1));
         }
-        else if (handleWay == -1){
-            // TODO:此时可以用统计来处理
-            logger.error(String.format("对%s进行挖掘容易造成堆内存溢出，暂不处理", urlHost));
+        else {
+            logger.error(String.format("对%s进行挖掘容易造成堆内存溢出或出现频次太少，暂不处理", urlHost));
         }
     }
 
@@ -279,15 +334,13 @@ public class MiningService {
     /**
      * 序列挖掘方法
      */
-    //public Dataset<Row> relateHostMiningTask(SparkSession spark, List<Row> data) {
     public Dataset<Row> relateHostMiningTask(List<Row> data) {
         StructType schema = new StructType(new StructField[]{ new StructField(
                 "sequence", new ArrayType(new ArrayType(DataTypes.StringType, true), true),
                 false, Metadata.empty())
         });
         Dataset<Row> sequenceDF = SparkFactoryUtils.getSparkSessionFactory().createDataFrame(data, schema);
-        sequenceDF.show(20, true);
-        //sequenceDF.show(50, false);
+        // sequenceDF.show(20, true);
         PrefixSpan prefixSpan = new PrefixSpan()
                 .setMinSupport(Configurations.getDoubleProperty(0, "prefixConfidence"))
                 .setMaxPatternLength(Configurations.getIntProperty(0, "prefixMaxPatternLength"));
@@ -295,7 +348,6 @@ public class MiningService {
         // Finding frequent sequential patterns
         Dataset<Row> sequence = prefixSpan.findFrequentSequentialPatterns(sequenceDF);
         sequence.show(10, false);
-        //sequence.show(100,false);
         return sequence;
     }
 
