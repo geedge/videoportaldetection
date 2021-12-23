@@ -3,14 +3,17 @@ package cn.ac.iie.mining;
 
 import cn.ac.iie.Utils.JedisPoolUtils;
 import cn.ac.iie.Utils.URLHandleUtils;
+import cn.ac.iie.config.Configurations;
 import cn.ac.iie.pojo.TrafficLog;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
+import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import redis.clients.jedis.Jedis;
 
 import java.io.*;
+import java.text.DecimalFormat;
 import java.util.*;
 
 public class EffectEvaluation {
@@ -51,6 +54,9 @@ public class EffectEvaluation {
                 String cIp = item[0];
                 String yspHost = URLHandleUtils.getFirstURLPath(item[1]);
                 String refererHost = item[2];
+                // 这里直接过滤掉200和haokan视频
+                if (yspHost.startsWith("200.200.200.200") || refererHost.equals("haokan.baidu.com"))
+                    continue;
                 int[] resultIndex = itemEvaluate(yspHost, refererHost, miningService);
 
                 yspCnt += 1;
@@ -70,9 +76,9 @@ public class EffectEvaluation {
                         break;
                     // 防止OOM，仅采用统计
                     case 0:
-                        validateStatisticsYspCnt += 1;
-                        accumulateResult(evaluateMap, "statistics_all", resultIndex[6]);
-                        break;
+                        // validateStatisticsYspCnt += 1;
+                        // accumulateResult(evaluateMap, "statistics_all", resultIndex[6]);
+                        // break;
                     // 数量过少，不符合众包思想，不进行统计或者序列挖掘
                     case -1:
                         lostYspHost.add(yspHost);
@@ -84,6 +90,7 @@ public class EffectEvaluation {
                 }
             }
             printEvaluate(yspCnt, validateYspCnt, validateStatisticsYspCnt, validateYspSum, evaluateMap);
+            printRecall(yspCnt, validateYspCnt, validateStatisticsYspCnt, validateYspSum, evaluateMap);
             //System.out.println(lostYspHost.toString());
             System.out.println(String.format("不符合众包条件（小于最小挖掘数目）的个数为：%d", lostYspHost.size()));
             System.out.println(String.format("防止OOM的个数位:%d", validateStatisticsYspCnt));
@@ -150,7 +157,11 @@ public class EffectEvaluation {
         }
     }
 
-    //TODO
+    /**
+     * @param yspHost 音视频
+     * @param refererHost 入口
+     * @return 按照规则得到的序列
+     */
     private int[] mining2Evaluate(String yspHost, String refererHost, MiningService miningService, Jedis jedis) {
         List<List<TrafficLog>> sawContext = new ArrayList<>();
         int handleWay = miningService.inputMemChecker(yspHost, sawContext);
@@ -192,7 +203,9 @@ public class EffectEvaluation {
      */
     private int judgeIndex(String candidate, String refererHost) {
         String[] candidateArray = candidate.substring(1, candidate.length()-1).split(", ");
-        for (int i = 0; i < candidateArray.length; i++) {
+        // 对入口大小进行限制
+        int candidate_size = Configurations.getIntProperty(0, "candidateSize");
+        for (int i = 0; i < candidateArray.length && i < candidate_size; i++) {
             if (refererHost.equals(candidateArray[i]))
                 return i + 1;
         }
@@ -237,7 +250,7 @@ public class EffectEvaluation {
             String key = entry.getKey();
             Integer[] value = entry.getValue();
             if (key.equals("statistics_all")) {
-                System.out.format("%18s%18s%18s%18s%18s%18s%18s%n",
+                System.out.format("%18s%18s%18s%18.3f%18.3f%18.3f%18.3f%n",
                         key, value[0], value[1],
                         value[2] / (float) (validateYspCmt + validateStatisticsYspCnt),
                         value[3] / (float) (validateYspCmt + validateStatisticsYspCnt),
@@ -245,7 +258,7 @@ public class EffectEvaluation {
                         value[5] / (float) (validateYspCmt + validateStatisticsYspCnt));
             }
             else {
-                System.out.format("%18s%18s%18s%18s%18s%18s%18s%n",
+                System.out.format("%18s%18s%18s%18.3f%18.3f%18.3f%18.3f%n",
                         key, value[0], value[1],
                         value[2] / (float) validateYspCmt,
                         value[3] / (float) validateYspCmt,
@@ -255,9 +268,37 @@ public class EffectEvaluation {
         }
     }
 
+    /**
+     * 这里求的是召回率，所以理所当然的，需要去除不符合序列挖掘条件的（包括防止OOM的和出现次数过少的）
+     * @param yspCmt
+     * @param validateYspCmt
+     * @param validateStatisticsYspCnt
+     * @param validateYspSum
+     * @param evaluateMap
+     */
+    private void printRecall(int yspCmt, int validateYspCmt, int validateStatisticsYspCnt, int validateYspSum, Map<String, Integer[]> evaluateMap) {
+        System.out.format("\n%18s%18s%18s%18s%18s%n", "Sorting rules", "Recall(1)", "Recall(5)", "Recall(10)", "Recall(50)");
+        DecimalFormat decimalFormat = new DecimalFormat("0.00%");
+        for (Map.Entry<String, Integer[]> entry : evaluateMap.entrySet()) {
+            String key = entry.getKey();
+            Integer[] value = entry.getValue();
+            System.out.format("%18s%18s%18s%18s%18s%n",
+                    key,
+                    decimalFormat.format(value[3] / (float) (validateYspCmt)),
+                    decimalFormat.format(value[4] / (float) (validateYspCmt)),
+                    decimalFormat.format(value[5] / (float) (validateYspCmt)),
+                    decimalFormat.format(value[0] / (float) validateYspCmt));
+        }
+    }
+
+    @Test
+    public void testGrammar() {
+        System.out.format("%18s%18.2f", 'a', 15.8888);
+    }
+
 
     public static void main(String[] args) {
         EffectEvaluation effectEvaluation = new EffectEvaluation();
-        effectEvaluation.evaluateFromFile("testSetWeb.txt");
+        effectEvaluation.evaluateFromFile("testSet.txt");
     }
 }

@@ -286,7 +286,7 @@ public class MiningService {
                 false, Metadata.empty())
         });
         Dataset<Row> sequenceDF = SparkFactoryUtils.getSparkSessionFactory().createDataFrame(data, schema);
-        sequenceDF.show(20, false);
+        sequenceDF.show(20, true);
         //sequenceDF.show(50, false);
         PrefixSpan prefixSpan = new PrefixSpan()
                 .setMinSupport(Configurations.getDoubleProperty(0, "prefixConfidence"))
@@ -300,11 +300,14 @@ public class MiningService {
     }
 
     /**
+     * Note：
      * 将spark序列挖掘返回的结果进行处理，返回候选集
      * 如果有需要重排序的也在这一步进行处理
-     * 总感觉Spark用Iterator的处理很慢，不如lambda
+     * 12.23更新：添加了多入口挖掘，目前匹配原数据这一块暂时首项而非首项的最长频繁序列
      *
-     * TODO:这里项集的域名的地址没有经过处理
+     * 提醒自己的：
+     * 总感觉Spark用Iterator的处理很慢，不如lambda
+     * 这里项集的域名的地址没有经过处理
      * 这里有一定概率内存溢出，目前暂不清楚如何增加一个task的最大内存
      */
     public List<String> miningCandidate(Dataset<Row> sequence) {
